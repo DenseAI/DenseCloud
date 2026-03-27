@@ -1,0 +1,40 @@
+dense-base:
+  image:
+    repository: registry.example.invalid/dense/workload
+    tag: latest
+  grpc:
+    enabled: true
+    port: 50051
+    tls:
+      enabled: true
+      certSecret: example-grpc-tls
+      secretReloadAnnotations:
+        secret.reloader.stakater.com/reload: example-grpc-tls
+      certManager:
+        enabled: true
+        issuerRef:
+          name: letsencrypt-prod
+          kind: ClusterIssuer
+          group: cert-manager.io
+        dnsNames:
+          - grpc.example.com
+    service:
+      enabled: true
+      port: 50051
+    ingress:
+      enabled: true
+      className: nginx
+      annotations:
+        nginx.ingress.kubernetes.io/backend-protocol: GRPC
+      certManager:
+        enabled: true
+        clusterIssuer: letsencrypt-prod
+      hosts:
+        - host: grpc.example.com
+          paths:
+            - path: /
+              pathType: Prefix
+      tls:
+        - secretName: example-grpc-ingress-tls
+          hosts:
+            - grpc.example.com

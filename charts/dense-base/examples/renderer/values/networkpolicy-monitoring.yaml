@@ -1,0 +1,27 @@
+dense-base:
+  image:
+    repository: registry.example.invalid/dense/workload
+    tag: latest
+  serviceMonitor:
+    enabled: true
+    path: /metrics
+  networkPolicy:
+    enabled: true
+    ingress:
+      enabled: true
+      allowSameNamespace: false
+      peers:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prometheus
+      ports:
+        - protocol: TCP
+          port: 8080
+    egress:
+      enabled: true
+      allowDNS: true
+      peers: []
+      ports: []

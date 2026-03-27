@@ -1,0 +1,63 @@
+# If you prefer the allow list template instead of the deny list, see community template:
+# https://github.com/github/gitignore/blob/main/community/Golang/Go.AllowList.gitignore
+
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+bin/
+minimal_e2e
+
+# Test binary, built with `go test -c`
+*.test
+
+# Code coverage profiles and other test artifacts
+*.out
+coverage.*
+*.coverprofile
+profile.cov
+
+# Dependency directories
+# vendor/
+
+# Go workspace file
+go.work
+go.work.sum
+
+# env file
+.env
+.env.*
+!.env.example
+
+# Local override files
+*.local
+
+# Logs/runtime artifacts
+*.log
+*.pid
+*.kubeconfig
+
+# Local temp dirs
+tmp/
+.tmp/
+
+# OS junk
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Helm artifacts
+charts/*/charts/*.tgz
+charts/*/charts/*.tar.gz
+# charts/*/charts/ # Uncomment if you don't want to vendor subcharts
+
+# Internal Reports (Uncomment to hide from public)
+# DenseCloud_CTO_Report.md
+
+# Editor/IDE
+.idea/
+.vscode/
+*.swp
+*.swo

@@ -1,0 +1,41 @@
+dense-base:
+  image:
+    repository: registry.example.invalid/dense/workload
+    tag: latest
+  serviceMonitor:
+    enabled: true
+    path: /metrics
+  networkPolicy:
+    enabled: true
+    ingress:
+      enabled: true
+      allowSameNamespace: false
+      peers:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: ingress-nginx
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prometheus
+      ports:
+        - protocol: TCP
+          port: 8080
+    egress:
+      enabled: true
+      allowDNS: true
+      peers:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: observability
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: otel-collector
+      ports:
+        - protocol: TCP
+          port: 4317

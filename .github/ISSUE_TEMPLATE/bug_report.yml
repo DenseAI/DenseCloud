@@ -1,0 +1,67 @@
+name: Bug report
+description: Report a runtime, chart, or documentation defect
+title: "[bug] "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this template for reproducible defects in DenseCloud runtime code,
+        Helm chart behavior, or public documentation.
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Go runtime
+        - Helm chart
+        - Documentation
+        - CI or release
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Affected version
+      description: Git tag, chart version, or commit SHA
+      placeholder: v0.1.0
+    validations:
+      required: true
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: Describe the bug and expected behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction
+      description: Provide exact steps, values, requests, or commands
+      placeholder: |
+        1. ...
+        2. ...
+        3. ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Logs or rendered output
+      description: Paste relevant output, stack traces, or manifest snippets
+      render: text
+
+  - type: textarea
+    id: impact
+    attributes:
+      label: Impact
+      description: Explain user-visible effect, regression risk, or workaround
+    validations:
+      required: true

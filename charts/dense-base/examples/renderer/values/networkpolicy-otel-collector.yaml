@@ -1,0 +1,21 @@
+dense-base:
+  image:
+    repository: registry.example.invalid/dense/workload
+    tag: latest
+  networkPolicy:
+    enabled: true
+    ingress:
+      enabled: false
+    egress:
+      enabled: true
+      allowDNS: true
+      peers:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: observability
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: otel-collector
+      ports:
+        - protocol: TCP
+          port: 4317

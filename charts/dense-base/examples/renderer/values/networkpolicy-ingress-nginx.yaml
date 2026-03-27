@@ -1,0 +1,24 @@
+dense-base:
+  image:
+    repository: registry.example.invalid/dense/workload
+    tag: latest
+  networkPolicy:
+    enabled: true
+    ingress:
+      enabled: true
+      allowSameNamespace: false
+      peers:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: ingress-nginx
+      ports:
+        - protocol: TCP
+          port: 8080
+    egress:
+      enabled: true
+      allowDNS: true
+      peers: []
+      ports: []

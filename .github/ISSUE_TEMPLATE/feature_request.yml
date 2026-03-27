@@ -1,0 +1,52 @@
+name: Feature request
+description: Propose a shared platform capability for DenseCloud
+title: "[feature] "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        DenseCloud accepts proposals for shared runtime and deployment
+        primitives. Product-specific behavior usually belongs in downstream
+        repositories.
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Go runtime
+        - Helm chart
+        - Documentation
+        - Release process
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem statement
+      description: What problem exists today and who is blocked by it
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed change
+      description: Describe the API, chart value, behavior, or docs improvement
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Include downstream-only or local workaround options
+
+  - type: textarea
+    id: compatibility
+    attributes:
+      label: Compatibility impact
+      description: Note any migration or semver implications

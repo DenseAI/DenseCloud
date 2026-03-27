@@ -1,0 +1,25 @@
+{{- include "dense-base.validate" (dict "root" . "values" (index .Values "dense-base")) -}}
+---
+{{ include "dense-base.serviceAccount" (dict "root" . "values" (index .Values "dense-base")) }}
+---
+{{ include "dense-base.pvc" (dict "root" . "values" (index .Values "dense-base")) }}
+---
+{{ include "dense-base.grpcCertificate" (dict "root" . "values" (index .Values "dense-base")) }}
+---
+{{ include "dense-base.deployment" (dict "root" . "values" (index .Values "dense-base")) }}
+---
+{{ include "dense-base.service" (dict "root" . "values" (index .Values "dense-base")) }}
+---
+{{ include "dense-base.grpcService" (dict "root" . "values" (index .Values "dense-base")) }}
+---
+{{ include "dense-base.ingress" (dict "root" . "values" (index .Values "dense-base")) }}
+---
+{{ include "dense-base.grpcIngress" (dict "root" . "values" (index .Values "dense-base")) }}
+---
+{{ include "dense-base.networkPolicy" (dict "root" . "values" (index .Values "dense-base")) }}
+---
+{{ include "dense-base.keda" (dict "root" . "values" (index .Values "dense-base")) }}
+---
+{{ include "dense-base.pdb" (dict "root" . "values" (index .Values "dense-base")) }}
+---
+{{ include "dense-base.serviceMonitor" (dict "root" . "values" (index .Values "dense-base")) }}

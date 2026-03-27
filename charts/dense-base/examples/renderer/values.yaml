@@ -1,0 +1,3 @@
+dense-base:
+  image:
+    repository: registry.example.invalid/dense/workload

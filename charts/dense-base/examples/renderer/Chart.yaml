@@ -1,0 +1,10 @@
+apiVersion: v2
+name: dense-base-renderer
+description: Render harness for DenseCloud dense-base library chart
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+dependencies:
+  - name: dense-base
+    version: 1.0.0
+    repository: file://../../

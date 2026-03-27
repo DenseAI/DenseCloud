@@ -1,0 +1,214 @@
+# Reference defaults for consumers.
+# Consumers typically pass this block as `.Values.dense-base`.
+
+nameOverride: ""
+fullnameOverride: ""
+
+replicaCount: 1
+
+deploymentAnnotations: {}
+minReadySeconds: 0
+progressDeadlineSeconds: 0
+updateStrategy: {}
+
+image:
+  repository: ""
+  tag: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+serviceAccount:
+  create: true
+  name: ""
+  automount: false
+  annotations: {}
+
+podAnnotations: {}
+podLabels: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  fsGroup: 1000
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  runAsNonRoot: true
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+terminationGracePeriodSeconds: 60
+priorityClassName: ""
+runtimeClassName: ""
+
+service:
+  enabled: true
+  type: ClusterIP
+  port: 8080
+  targetPort: http
+  annotations: {}
+  extraPorts: []
+
+grpc:
+  enabled: false
+  port: 50051
+  tls:
+    enabled: false
+    certSecret: ""
+    certFile: /etc/grpc/tls/tls.crt
+    keyFile: /etc/grpc/tls/tls.key
+    secretReloadAnnotations: {}
+    certManager:
+      enabled: false
+      issuerRef:
+        name: ""
+        kind: ClusterIssuer
+        group: cert-manager.io
+      commonName: ""
+      dnsNames: []
+      duration: ""
+      renewBefore: ""
+      usages:
+        - server auth
+    clientCASecret: ""
+    clientCAFile: /etc/grpc/client-ca/ca.crt
+    requireClientCert: false
+  service:
+    enabled: false
+    type: ClusterIP
+    port: 50051
+    annotations: {}
+    extraPorts: []
+  ingress:
+    enabled: false
+    className: ""
+    annotations: {}
+    certManager:
+      enabled: false
+      clusterIssuer: ""
+      issuer: ""
+      extraAnnotations: {}
+    hosts: []
+    tls: []
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  certManager:
+    enabled: false
+    clusterIssuer: ""
+    issuer: ""
+    extraAnnotations: {}
+  hosts: []
+  tls: []
+
+resources: {}
+
+probes:
+  enabled: true
+  liveness:
+    path: /health/live
+    initialDelaySeconds: 20
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
+  readiness:
+    path: /health/ready
+    initialDelaySeconds: 10
+    periodSeconds: 5
+    timeoutSeconds: 3
+    failureThreshold: 3
+  startup:
+    path: /health/startup
+    initialDelaySeconds: 5
+    periodSeconds: 5
+    timeoutSeconds: 5
+    failureThreshold: 60
+
+env: []
+extraEnv: []
+extraEnvFrom: []
+
+initContainers: []
+extraInitContainers: []
+extraContainers: []
+
+tmpVolume:
+  enabled: true
+  mountPath: /tmp
+  sizeLimit: 1Gi
+  medium: Memory
+
+lifecycle:
+  preStopSleepSeconds: 0
+
+model:
+  source: none # none | pvc | emptyDir | hostPath
+  path: /models
+  filename: main_model.gguf
+  envVarName: MODEL_PATH
+  existingClaim: ""
+  pvc:
+    storageClassName: ""
+    size: 50Gi
+    accessModes:
+      - ReadWriteOnce
+  hostPath: ""
+  hostPathType: DirectoryOrCreate
+  emptyDir:
+    sizeLimit: 20Gi
+    medium: ""
+
+extraVolumeMounts: []
+extraVolumes: []
+
+keda:
+  enabled: false
+  minReplicaCount: 1
+  maxReplicaCount: 10
+  pollingInterval: 15
+  cooldownPeriod: 60
+  advanced: {}
+  prometheusServerAddress: http://prometheus-server.monitoring.svc.cluster.local:80
+  triggers:
+    custom: []
+
+podDisruptionBudget:
+  enabled: false
+  minAvailable: 1
+  maxUnavailable: ""
+
+serviceMonitor:
+  enabled: false
+  labels: {}
+  interval: 15s
+  scrapeTimeout: 10s
+  path: /metrics
+
+networkPolicy:
+  enabled: false
+  ingress:
+    enabled: true
+    allowAll: false
+    allowSameNamespace: false
+    peers: []
+    ports:
+      - protocol: TCP
+        port: 8080
+  egress:
+    enabled: true
+    allowAll: false
+    allowDNS: true
+    peers: []
+    ports: []
+
+nodeSelector: {}
+affinity: {}
+tolerations: []
+topologySpreadConstraints: []

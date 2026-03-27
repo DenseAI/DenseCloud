@@ -1,0 +1,14 @@
+apiVersion: v2
+name: dense-base
+description: Dense Series shared cloud-native base chart (library)
+type: library
+version: 1.0.0
+appVersion: "1.0.0"
+keywords:
+  - dense
+  - cloud-native
+  - kubernetes
+  - keda
+  - observability
+maintainers:
+  - name: Dense Platform Team
