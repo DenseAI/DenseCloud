@@ -4,11 +4,12 @@
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![Release](https://img.shields.io/github/v/release/DenseAI/DenseCloud)](https://github.com/DenseAI/DenseCloud/releases)
 
-Shared cloud-native platform repository for Dense product lines.
+Shared cloud-native serving chassis for Dense product lines.
 
-DenseCloud packages the reusable platform pieces that Dense workloads share:
+DenseCloud packages the reusable serving pieces that Dense workloads share:
 
-- Go runtime and middleware for HTTP/gRPC services
+- Go runtime and middleware/interceptors for HTTP/gRPC services
+- health, readiness, startup, metrics, tracing, and graceful shutdown contracts
 - Helm library chart for Kubernetes deployment scaffolding
 - Reference release and migration documentation
 
@@ -23,11 +24,17 @@ than deployed directly as a standalone product service.
 
 DenseCloud owns only reusable chassis concerns:
 
-- HTTP/gRPC service lifecycle, health, metrics, middleware/interceptor parity
+- HTTP/gRPC service lifecycle, health, startup/readiness/liveness probes,
+  metrics, tracing, graceful shutdown, and middleware/interceptor parity
 - Kubernetes deployment skeletons and validation
 - Extension points for OSS runtime modules
 
-DenseCloud does not own product-specific control-plane behavior or policy/enforcement flows.
+DenseCloud is not a control plane. DenseOps owns UI/API surfaces, rollout
+orchestration, desired/observed state, node operations, benchmark gates, and
+operations workflows. DenseEnterprise owns auth, license, quota, audit,
+feature-gate, attestation, and enterprise policy enforcement. DenseCloud must
+stay domain-neutral and contains no DenseCore, DenseDiffusion, DenseOps,
+DenseEnterprise, model, CGO, or inference-specific business logic.
 
 ## Versioning
 
@@ -49,6 +56,28 @@ Example imports:
 - `github.com/DenseAI/DenseCloud/go/server`
 - `github.com/DenseAI/DenseCloud/go/telemetry`
 
+Consumer repositories should keep this canonical module path in committed
+`go.mod` files. Local multi-repo development should use a workspace instead of
+committing `replace` directives:
+
+```bash
+cd /path/to/workspace
+go work init ./DenseCloud ./DenseOps ./DenseEnterprise
+go work use ./DenseCloud ./DenseOps ./DenseEnterprise
+```
+
+For one consumer repo:
+
+```bash
+cd /path/to/DenseOps
+go work init . ../DenseCloud
+go work use . ../DenseCloud
+```
+
+Release builds should run from a clean module view, or with `GOWORK=off`, so
+that the published dependency resolves through
+`github.com/DenseAI/DenseCloud@vX.Y.Z` rather than a local checkout.
+
 ### Helm library chart
 
 In a consumer chart:
@@ -59,6 +88,17 @@ dependencies:
     version: 1.0.0
     repository: oci://ghcr.io/DenseAI/charts
 ```
+
+### Reference Runtime Image
+
+You can pull the official reference runtime (built with the minimal example) from Docker Hub:
+
+```bash
+docker pull denseai/densecloud:v1.0.0
+```
+
+This image is a ready-to-run Go server implementing the DenseCloud chassis contracts (health, metrics, graceful shutdown).
+
 
 ## Release Artifacts
 
@@ -74,6 +114,15 @@ repositories, not by DenseCloud itself.
 - No C++/CGO/model-domain logic in shared runtime packages
 - Domain repos own business APIs and inference behavior
 - Shared runtime owns lifecycle, observability, deployment skeletons
+- KEDA requires explicit product-provided triggers; DenseCloud intentionally
+  provides no placeholder autoscaling query because it cannot know a product's
+  correct workload metric.
+- OpenTelemetry's default insecure local endpoint is for developer loops only.
+  Production deployments must configure a real collector endpoint and TLS or a
+  product-approved transport boundary.
+- cert-manager Secret rotation support is a chart contract and reloader
+  integration point. Actual zero-downtime certificate hot reload depends on
+  the controller and application path being qualified by the consuming product.
 
 ## Repository layout
 

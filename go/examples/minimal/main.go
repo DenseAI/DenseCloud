@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/DenseAI/DenseCloud/go/middleware"
 	"github.com/DenseAI/DenseCloud/go/server"
 	"github.com/DenseAI/DenseCloud/go/telemetry"
 )
@@ -16,12 +15,10 @@ func main() {
 
 	runtime, err := server.NewHTTPRuntime(server.HTTPRuntimeConfig{
 		ServiceName: "dense-example",
-		RootMiddleware: []func(http.Handler) http.Handler{
-			middleware.Recovery(),
-			middleware.RequestID(),
-			middleware.RequestTimeout(15 * time.Second),
-			middleware.Logging(),
-		},
+		RootMiddleware: server.DefaultHTTPMiddleware(server.HTTPMiddlewarePresetConfig{
+			TracerName:     "dense-example",
+			RequestTimeout: 15 * time.Second,
+		}),
 	})
 	if err != nil {
 		slog.Error("failed to create runtime", slog.String("error", err.Error()))

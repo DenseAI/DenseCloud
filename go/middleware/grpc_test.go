@@ -93,31 +93,228 @@ func TestDefaultGRPCKey_PrefersStableClientIdentityOverRequestID(t *testing.T) {
 func TestGRPCMetricsUnary_RecordsMetrics(t *testing.T) {
 	t.Parallel()
 
-	metrics := telemetry.NewGRPCMetrics(telemetry.GRPCMetricsConfig{ServiceName: "dense-test"})
-	interceptor := GRPCMetricsUnary(metrics)
-
-	_, err := interceptor(context.Background(), nil, &grpc.UnaryServerInfo{FullMethod: "/dense.Service/Call"}, func(context.Context, any) (any, error) {
-		return nil, status.Error(codes.ResourceExhausted, "busy")
-	})
-	if status.Code(err) != codes.ResourceExhausted {
-		t.Fatalf("unexpected error code: %v", err)
+	tests := []struct {
+		name        string
+		interceptor func(*telemetry.GRPCMetrics) grpc.UnaryServerInterceptor
+		handler     grpc.UnaryHandler
+		wantCode    codes.Code
+		wantPanic   bool
+	}{
+		{
+			name:        "success",
+			interceptor: GRPCMetricsUnary,
+			handler: func(context.Context, any) (any, error) {
+				return "ok", nil
+			},
+			wantCode: codes.OK,
+		},
+		{
+			name:        "handler error",
+			interceptor: GRPCMetricsUnary,
+			handler: func(context.Context, any) (any, error) {
+				return nil, status.Error(codes.ResourceExhausted, "busy")
+			},
+			wantCode: codes.ResourceExhausted,
+		},
+		{
+			name:        "handler panic",
+			interceptor: GRPCMetricsUnary,
+			handler: func(context.Context, any) (any, error) {
+				panic("boom")
+			},
+			wantCode:  codes.Internal,
+			wantPanic: true,
+		},
+		{
+			name: "metrics inside recovery",
+			interceptor: func(metrics *telemetry.GRPCMetrics) grpc.UnaryServerInterceptor {
+				return ChainUnaryInterceptors(GRPCRecoveryUnary(), GRPCMetricsUnary(metrics))
+			},
+			handler: func(context.Context, any) (any, error) {
+				panic("boom")
+			},
+			wantCode: codes.Internal,
+		},
+		{
+			name: "metrics outside recovery",
+			interceptor: func(metrics *telemetry.GRPCMetrics) grpc.UnaryServerInterceptor {
+				return ChainUnaryInterceptors(GRPCMetricsUnary(metrics), GRPCRecoveryUnary())
+			},
+			handler: func(context.Context, any) (any, error) {
+				panic("boom")
+			},
+			wantCode: codes.Internal,
+		},
 	}
 
-	httpMetrics := telemetry.NewHTTPMetrics(telemetry.HTTPMetricsConfig{
-		ServiceName: "dense-test",
-		Collectors:  []telemetry.PrometheusCollector{metrics},
-	})
-	body := captureMetricsBody(httpMetrics)
-	if !strings.Contains(body, `densecloud_grpc_requests_total{service="dense-test",method="/dense.Service/Call",rpc_type="unary",code="ResourceExhausted"} 1`) {
-		t.Fatalf("expected grpc request metric, got %q", body)
-	}
-	if !strings.Contains(body, `densecloud_grpc_request_errors_total{service="dense-test",method="/dense.Service/Call",rpc_type="unary",code="ResourceExhausted"} 1`) {
-		t.Fatalf("expected grpc error metric, got %q", body)
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			metrics := telemetry.NewGRPCMetrics(telemetry.GRPCMetricsConfig{ServiceName: "dense-test"})
+			interceptor := tt.interceptor(metrics)
+			info := &grpc.UnaryServerInfo{FullMethod: "/dense.Service/Call"}
+
+			_, err, panicked := callUnaryAndRecover(interceptor, context.Background(), nil, info, tt.handler)
+			if panicked != tt.wantPanic {
+				t.Fatalf("panic = %v, want %v", panicked, tt.wantPanic)
+			}
+			if !tt.wantPanic && status.Code(err) != tt.wantCode {
+				t.Fatalf("status.Code(err) = %s, want %s", status.Code(err), tt.wantCode)
+			}
+
+			body := captureGRPCMetricsBody(metrics)
+			requireMetricContains(t, body, `densecloud_grpc_in_flight_requests{service="dense-test"} 0`)
+			requireMetricContains(t, body, `densecloud_grpc_requests_total{service="dense-test",method="/dense.Service/Call",rpc_type="unary",code="`+tt.wantCode.String()+`"} 1`)
+			requireMetricContains(t, body, `densecloud_grpc_request_duration_seconds_count{service="dense-test",method="/dense.Service/Call",rpc_type="unary"} 1`)
+			if tt.wantCode != codes.OK {
+				requireMetricContains(t, body, `densecloud_grpc_request_errors_total{service="dense-test",method="/dense.Service/Call",rpc_type="unary",code="`+tt.wantCode.String()+`"} 1`)
+			}
+		})
 	}
 }
 
-func captureMetricsBody(metrics *telemetry.HTTPMetrics) string {
+func TestGRPCMetricsStream_RecordsMetrics(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		interceptor func(*telemetry.GRPCMetrics) grpc.StreamServerInterceptor
+		handler     grpc.StreamHandler
+		wantCode    codes.Code
+		wantPanic   bool
+	}{
+		{
+			name:        "success",
+			interceptor: GRPCMetricsStream,
+			handler: func(any, grpc.ServerStream) error {
+				return nil
+			},
+			wantCode: codes.OK,
+		},
+		{
+			name:        "handler error",
+			interceptor: GRPCMetricsStream,
+			handler: func(any, grpc.ServerStream) error {
+				return status.Error(codes.Unavailable, "down")
+			},
+			wantCode: codes.Unavailable,
+		},
+		{
+			name:        "handler panic",
+			interceptor: GRPCMetricsStream,
+			handler: func(any, grpc.ServerStream) error {
+				panic("boom")
+			},
+			wantCode:  codes.Internal,
+			wantPanic: true,
+		},
+		{
+			name: "metrics inside recovery",
+			interceptor: func(metrics *telemetry.GRPCMetrics) grpc.StreamServerInterceptor {
+				return ChainStreamInterceptors(GRPCRecoveryStream(), GRPCMetricsStream(metrics))
+			},
+			handler: func(any, grpc.ServerStream) error {
+				panic("boom")
+			},
+			wantCode: codes.Internal,
+		},
+		{
+			name: "metrics outside recovery",
+			interceptor: func(metrics *telemetry.GRPCMetrics) grpc.StreamServerInterceptor {
+				return ChainStreamInterceptors(GRPCMetricsStream(metrics), GRPCRecoveryStream())
+			},
+			handler: func(any, grpc.ServerStream) error {
+				panic("boom")
+			},
+			wantCode: codes.Internal,
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			metrics := telemetry.NewGRPCMetrics(telemetry.GRPCMetricsConfig{ServiceName: "dense-test"})
+			interceptor := tt.interceptor(metrics)
+			info := &grpc.StreamServerInfo{FullMethod: "/dense.Service/Stream"}
+			stream := testServerStream{ctx: context.Background()}
+
+			err, panicked := callStreamAndRecover(interceptor, nil, stream, info, tt.handler)
+			if panicked != tt.wantPanic {
+				t.Fatalf("panic = %v, want %v", panicked, tt.wantPanic)
+			}
+			if !tt.wantPanic && status.Code(err) != tt.wantCode {
+				t.Fatalf("status.Code(err) = %s, want %s", status.Code(err), tt.wantCode)
+			}
+
+			body := captureGRPCMetricsBody(metrics)
+			requireMetricContains(t, body, `densecloud_grpc_in_flight_requests{service="dense-test"} 0`)
+			requireMetricContains(t, body, `densecloud_grpc_requests_total{service="dense-test",method="/dense.Service/Stream",rpc_type="stream",code="`+tt.wantCode.String()+`"} 1`)
+			requireMetricContains(t, body, `densecloud_grpc_request_duration_seconds_count{service="dense-test",method="/dense.Service/Stream",rpc_type="stream"} 1`)
+			if tt.wantCode != codes.OK {
+				requireMetricContains(t, body, `densecloud_grpc_request_errors_total{service="dense-test",method="/dense.Service/Stream",rpc_type="stream",code="`+tt.wantCode.String()+`"} 1`)
+			}
+		})
+	}
+}
+
+func callUnaryAndRecover(
+	interceptor grpc.UnaryServerInterceptor,
+	ctx context.Context,
+	req any,
+	info *grpc.UnaryServerInfo,
+	handler grpc.UnaryHandler,
+) (resp any, err error, panicked bool) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			panicked = true
+		}
+	}()
+	resp, err = interceptor(ctx, req, info, handler)
+	return resp, err, false
+}
+
+func callStreamAndRecover(
+	interceptor grpc.StreamServerInterceptor,
+	srv any,
+	ss grpc.ServerStream,
+	info *grpc.StreamServerInfo,
+	handler grpc.StreamHandler,
+) (err error, panicked bool) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			panicked = true
+		}
+	}()
+	err = interceptor(srv, ss, info, handler)
+	return err, false
+}
+
+func requireMetricContains(t *testing.T, body, want string) {
+	t.Helper()
+	if !strings.Contains(body, want) {
+		t.Fatalf("expected metric %q, got %q", want, body)
+	}
+}
+
+func captureGRPCMetricsBody(grpcMetrics *telemetry.GRPCMetrics) string {
+	metrics := telemetry.NewHTTPMetrics(telemetry.HTTPMetricsConfig{
+		ServiceName: "dense-test",
+		Collectors:  []telemetry.PrometheusCollector{grpcMetrics},
+	})
 	rec := httptest.NewRecorder()
 	metrics.Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/metrics", nil))
 	return rec.Body.String()
+}
+
+type testServerStream struct {
+	grpc.ServerStream
+	ctx context.Context
+}
+
+func (s testServerStream) Context() context.Context {
+	return s.ctx
 }

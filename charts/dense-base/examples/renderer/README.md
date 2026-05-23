@@ -65,6 +65,13 @@ helm template dense-base-smoke charts/dense-base/examples/renderer \
   -f charts/dense-base/examples/renderer/values/networkpolicy-otel-collector.yaml
 ```
 
+Render KEDA with an explicit consumer-provided trigger:
+
+```bash
+helm template dense-base-smoke charts/dense-base/examples/renderer \
+  -f charts/dense-base/examples/renderer/values/keda-custom-trigger.yaml
+```
+
 Repository helpers:
 
 ```bash
@@ -72,6 +79,9 @@ Repository helpers:
 ./scripts/kind_smoke.sh
 ```
 
-`kind_smoke.sh` creates a short-lived local kind cluster, installs placeholder
-CRDs for `Certificate` and `ServiceMonitor`, and applies the full values matrix
-to the API server in isolated namespaces.
+`helm_matrix.sh` also verifies that KEDA stays disabled for the baseline preset,
+that the custom-trigger preset renders a `ScaledObject`, and that enabling KEDA
+without `keda.triggers.custom` fails. `kind_smoke.sh` creates a short-lived
+local kind cluster, installs placeholder CRDs for `Certificate`, `ServiceMonitor`,
+and `ScaledObject`, and applies the full values matrix to the API server in
+isolated namespaces.

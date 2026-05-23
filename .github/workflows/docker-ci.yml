@@ -1,0 +1,27 @@
+name: docker-ci
+
+on:
+  push:
+    paths:
+      - "Dockerfile"
+      - "go/**"
+      - "go.mod"
+      - "go.sum"
+      - ".github/workflows/docker-ci.yml"
+  pull_request:
+    paths:
+      - "Dockerfile"
+      - "go/**"
+      - "go.mod"
+      - "go.sum"
+      - ".github/workflows/docker-ci.yml"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Docker build
+        run: docker build .

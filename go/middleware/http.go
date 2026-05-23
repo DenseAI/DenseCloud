@@ -188,16 +188,40 @@ func MaxBodySize(maxBytes int64) func(http.Handler) http.Handler {
 	}
 }
 
-// ContentType sets default content type for API endpoints.
+// ContentType sets default content type for /v1 API endpoints.
 func ContentType(contentType string) func(http.Handler) http.Handler {
+	return ContentTypeForPrefix("/v1", contentType)
+}
+
+// ContentTypeForPrefix sets a default content type for API endpoints under prefix.
+func ContentTypeForPrefix(prefix string, contentType string) func(http.Handler) http.Handler {
+	prefix = normalizeContentTypePrefix(prefix)
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if strings.HasPrefix(r.URL.Path, "/v1/") && w.Header().Get("Content-Type") == "" {
+			if pathHasPrefix(r.URL.Path, prefix) && w.Header().Get("Content-Type") == "" {
 				w.Header().Set("Content-Type", contentType)
 			}
 			next.ServeHTTP(w, r)
 		})
 	}
+}
+
+func normalizeContentTypePrefix(prefix string) string {
+	prefix = strings.TrimSpace(prefix)
+	if prefix == "" {
+		return "/v1"
+	}
+	if !strings.HasPrefix(prefix, "/") {
+		prefix = "/" + prefix
+	}
+	return strings.TrimSuffix(prefix, "/")
+}
+
+func pathHasPrefix(path, prefix string) bool {
+	if prefix == "" || prefix == "/" {
+		return true
+	}
+	return path == prefix || strings.HasPrefix(path, prefix+"/")
 }
 
 type responseWriter struct {

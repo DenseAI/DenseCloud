@@ -1,0 +1,19 @@
+dense-base:
+  image:
+    repository: registry.example.invalid/dense/workload
+    tag: latest
+  service:
+    enabled: true
+    port: 8080
+  keda:
+    enabled: true
+    minReplicaCount: 1
+    maxReplicaCount: 4
+    triggers:
+      custom:
+        - type: prometheus
+          metadata:
+            serverAddress: http://prometheus-server.monitoring.svc.cluster.local:80
+            metricName: product_provided_queue_depth
+            threshold: "10"
+            query: sum(product_provided_queue_depth)

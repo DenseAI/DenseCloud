@@ -1,6 +1,9 @@
 {{- define "dense-base.keda" -}}
 {{- $v := .values -}}
 {{- if $v.keda.enabled }}
+{{- if eq (len (default (list) $v.keda.triggers.custom)) 0 -}}
+{{- fail "dense-base: keda.triggers.custom must include at least one trigger when keda.enabled=true" -}}
+{{- end -}}
 apiVersion: keda.sh/v1alpha1
 kind: ScaledObject
 metadata:
@@ -21,15 +24,6 @@ spec:
     {{- toYaml . | nindent 4 }}
   {{- end }}
   triggers:
-    {{- with $v.keda.triggers.custom }}
-    {{- toYaml . | nindent 4 }}
-    {{- else }}
-    - type: prometheus
-      metadata:
-        serverAddress: {{ $v.keda.prometheusServerAddress | quote }}
-        metricName: "pending_requests"
-        threshold: "1"
-        query: "vector(0)"
-    {{- end }}
+    {{- toYaml $v.keda.triggers.custom | nindent 4 }}
 {{- end }}
 {{- end -}}

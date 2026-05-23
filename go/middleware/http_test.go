@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -9,6 +10,9 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/DenseAI/DenseCloud/go/telemetry"
 )
 
 type flusherRecorder struct {
@@ -95,6 +99,94 @@ func TestChainPreservesFlusher(t *testing.T) {
 	}
 }
 
+func TestRequestTimeoutAllowsSSEFlushBeforeContextDeadline(t *testing.T) {
+	ctxDone := make(chan error, 1)
+	handler := Chain(
+		RequestID(),
+		RequestTimeout(10*time.Millisecond),
+		Logging(),
+	)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: ready\n\n"))
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		<-r.Context().Done()
+		ctxDone <- r.Context().Err()
+	}))
+
+	rec := newFlusherRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/events", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", rec.Code)
+	}
+	if !rec.flushed {
+		t.Fatalf("expected SSE flush to reach the underlying writer")
+	}
+	if got := rec.Body.String(); got != "data: ready\n\n" {
+		t.Fatalf("unexpected SSE body %q", got)
+	}
+	select {
+	case err := <-ctxDone:
+		if err != context.DeadlineExceeded {
+			t.Fatalf("expected context deadline exceeded, got %v", err)
+		}
+	default:
+		t.Fatalf("expected handler to observe timeout cancellation")
+	}
+}
+
+func TestLoggingRecordsStreamingStatusAndBytes(t *testing.T) {
+	original := slog.Default()
+	var logs bytes.Buffer
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, nil)))
+	defer slog.SetDefault(original)
+
+	chunks := []string{"event: token\n", "data: hello\n\n"}
+	handler := Chain(
+		RequestID(),
+		Logging(),
+	)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		for _, chunk := range chunks {
+			_, _ = w.Write([]byte(chunk))
+			if flusher, ok := w.(http.Flusher); ok {
+				flusher.Flush()
+			}
+		}
+	}))
+
+	rec := newFlusherRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/events", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", rec.Code)
+	}
+	if !rec.flushed {
+		t.Fatalf("expected streaming response to flush")
+	}
+	wantBytes := len(strings.Join(chunks, ""))
+
+	records := decodeJSONLogLines(t, logs.Bytes())
+	if len(records) != 1 {
+		t.Fatalf("expected one request log, got %d: %s", len(records), logs.String())
+	}
+	record := records[0]
+	if got, _ := record["msg"].(string); got != "request completed" {
+		t.Fatalf("unexpected log message %q", got)
+	}
+	if got, _ := record["request_id"].(string); got == "" {
+		t.Fatalf("expected request_id in streaming log, got %v", record)
+	}
+	if got, _ := record["status_code"].(float64); int(got) != http.StatusOK {
+		t.Fatalf("expected logged status 200, got %v", record["status_code"])
+	}
+	if got, _ := record["bytes_written"].(float64); int(got) != wantBytes {
+		t.Fatalf("expected logged bytes %d, got %v", wantBytes, record["bytes_written"])
+	}
+}
+
 func TestCircuitBreakerPreservesFlusher(t *testing.T) {
 	cfg := DefaultCircuitBreakerConfig()
 	cfg.ReadyToTrip = 100
@@ -172,6 +264,110 @@ func TestRecovery_LogsRequestIDWhenWrappingRequestID(t *testing.T) {
 	}
 }
 
+func TestHTTPMetricsWithRecovery_RecordsPanicAs500(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		chain func(*telemetry.HTTPMetrics, http.Handler) http.Handler
+	}{
+		{
+			name: "metrics inside recovery",
+			chain: func(metrics *telemetry.HTTPMetrics, next http.Handler) http.Handler {
+				return Recovery()(metrics.Middleware()(next))
+			},
+		},
+		{
+			name: "metrics outside recovery",
+			chain: func(metrics *telemetry.HTTPMetrics, next http.Handler) http.Handler {
+				return metrics.Middleware()(Recovery()(next))
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			metrics := telemetry.NewHTTPMetrics(telemetry.HTTPMetricsConfig{ServiceName: "dense-test"})
+			handler := tt.chain(metrics, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+				panic("boom")
+			}))
+
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/panic", nil))
+			if rec.Code != http.StatusInternalServerError {
+				t.Fatalf("expected recovered response status 500, got %d", rec.Code)
+			}
+
+			body := captureHTTPMetrics(t, metrics)
+			requireHTTPMetric(t, body, `densecloud_http_in_flight_requests{service="dense-test"} 0`)
+			requireHTTPMetric(t, body, `densecloud_http_requests_total{service="dense-test",method="GET",path="/v1/panic",status_class="5xx"} 1`)
+			requireHTTPMetric(t, body, `densecloud_http_request_errors_total{service="dense-test",method="GET",path="/v1/panic",status_class="5xx"} 1`)
+			requireHTTPMetric(t, body, `densecloud_http_request_duration_seconds_count{service="dense-test",method="GET",path="/v1/panic"} 1`)
+		})
+	}
+}
+
+func TestContentTypeForPrefix(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		middleware func(http.Handler) http.Handler
+		path       string
+		want       string
+	}{
+		{
+			name:       "default v1 behavior",
+			middleware: ContentType("application/json"),
+			path:       "/v1/models",
+			want:       "application/json",
+		},
+		{
+			name:       "direct v1 callers still cover exact base path",
+			middleware: ContentType("application/json"),
+			path:       "/v1",
+			want:       "application/json",
+		},
+		{
+			name:       "custom api prefix",
+			middleware: ContentTypeForPrefix("/api", "application/json"),
+			path:       "/api/models",
+			want:       "application/json",
+		},
+		{
+			name:       "non api path unaffected",
+			middleware: ContentTypeForPrefix("/api", "application/json"),
+			path:       "/health/ready",
+			want:       "",
+		},
+		{
+			name:       "similar prefix unaffected",
+			middleware: ContentTypeForPrefix("/api", "application/json"),
+			path:       "/apix/models",
+			want:       "",
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			handler := tt.middleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusNoContent)
+			}))
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, tt.path, nil))
+			if got := rec.Header().Get("Content-Type"); got != tt.want {
+				t.Fatalf("Content-Type = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestCORS_PreflightAllowedOrigin_ShortCircuitsWith204(t *testing.T) {
 	called := false
 	handler := CORS([]string{"https://app.example.com"})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -200,6 +396,20 @@ func TestCORS_PreflightAllowedOrigin_ShortCircuitsWith204(t *testing.T) {
 		"Access-Control-Request-Method",
 		"Access-Control-Request-Headers",
 	)
+}
+
+func captureHTTPMetrics(t *testing.T, metrics *telemetry.HTTPMetrics) string {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	metrics.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	return rec.Body.String()
+}
+
+func requireHTTPMetric(t *testing.T, body, want string) {
+	t.Helper()
+	if !strings.Contains(body, want) {
+		t.Fatalf("expected metric %q, got %q", want, body)
+	}
 }
 
 func TestCORS_OptionsWithoutPreflight_PassesThrough(t *testing.T) {

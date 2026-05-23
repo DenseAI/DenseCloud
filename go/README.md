@@ -9,6 +9,18 @@ Package imports use functional subpaths, for example:
 - `github.com/DenseAI/DenseCloud/go/server`
 - `github.com/DenseAI/DenseCloud/go/telemetry`
 
+Consumer modules should import this canonical path directly and avoid
+committing local `replace` directives. For sibling-repo development, create a
+local `go.work` file instead:
+
+```bash
+go work init ./DenseCloud ./DenseOps ./DenseEnterprise
+go work use ./DenseCloud ./DenseOps ./DenseEnterprise
+```
+
+Run release validation with `GOWORK=off` when you need to prove the published
+module graph is independent of local checkouts.
+
 ## Functional Directories
 
 - `telemetry`: JSON structured logger initialization (`slog`) and shared HTTP/gRPC Prometheus exposition
@@ -27,12 +39,10 @@ _ = logger
 
 runtime, _ := server.NewHTTPRuntime(server.HTTPRuntimeConfig{
     ServiceName: "densediffusion",
-    RootMiddleware: []func(http.Handler) http.Handler{
-        middleware.Recovery(),
-        middleware.RequestID(),
-        middleware.RequestTimeout(120*time.Second),
-        middleware.Logging(),
-    },
+    RootMiddleware: server.DefaultHTTPMiddleware(server.HTTPMiddlewarePresetConfig{
+        TracerName:     "densediffusion",
+        RequestTimeout: 120*time.Second,
+    }),
 })
 runtime.APIMux().HandleFunc("/models", func(w http.ResponseWriter, r *http.Request) {})
 
@@ -48,6 +58,8 @@ _ = runner.RunBlocking(context.Background())
 ## Shared chassis helpers
 
 - `server.HealthRegistry.RegisterDependency(...)` lets product runtimes wire Redis, worker, exporter readiness checks into DenseCloud-owned `/health*` phases without re-implementing probe handlers.
+- `server.DefaultHTTPMiddleware(...)` provides the canonical DenseCloud root HTTP middleware order for shared chassis concerns.
+- `middleware.GRPCServerPreset(...)` provides the canonical gRPC interceptor bundle while leaving auth and business interceptors to product repos.
 - `telemetry.NewGRPCMetrics(...)` can be appended to the shared `/metrics` endpoint through `HTTPMetricsConfig.Collectors` and populated by `middleware.GRPCMetricsUnary` / `middleware.GRPCMetricsStream`.
 
 ## Versioning

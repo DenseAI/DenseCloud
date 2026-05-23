@@ -140,31 +140,45 @@ func GRPCLoggingStream() grpc.StreamServerInterceptor {
 
 // GRPCMetricsUnary records shared gRPC metrics for unary calls.
 func GRPCMetricsUnary(metrics *telemetry.GRPCMetrics) grpc.UnaryServerInterceptor {
-	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
+	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (resp any, err error) {
 		if metrics == nil {
 			return handler(ctx, req)
 		}
 
 		start := time.Now()
 		metrics.BeginRPC()
-		resp, err := handler(ctx, req)
-		metrics.ObserveRPC(info.FullMethod, "unary", status.Code(err).String(), time.Since(start).Seconds())
-		return resp, err
+		defer func() {
+			code := status.Code(err)
+			if rec := recover(); rec != nil {
+				code = codes.Internal
+				metrics.ObserveRPC(info.FullMethod, "unary", code.String(), time.Since(start).Seconds())
+				panic(rec)
+			}
+			metrics.ObserveRPC(info.FullMethod, "unary", code.String(), time.Since(start).Seconds())
+		}()
+		return handler(ctx, req)
 	}
 }
 
 // GRPCMetricsStream records shared gRPC metrics for stream calls.
 func GRPCMetricsStream(metrics *telemetry.GRPCMetrics) grpc.StreamServerInterceptor {
-	return func(srv any, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
+	return func(srv any, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) (err error) {
 		if metrics == nil {
 			return handler(srv, ss)
 		}
 
 		start := time.Now()
 		metrics.BeginRPC()
-		err := handler(srv, ss)
-		metrics.ObserveRPC(info.FullMethod, "stream", status.Code(err).String(), time.Since(start).Seconds())
-		return err
+		defer func() {
+			code := status.Code(err)
+			if rec := recover(); rec != nil {
+				code = codes.Internal
+				metrics.ObserveRPC(info.FullMethod, "stream", code.String(), time.Since(start).Seconds())
+				panic(rec)
+			}
+			metrics.ObserveRPC(info.FullMethod, "stream", code.String(), time.Since(start).Seconds())
+		}()
+		return handler(srv, ss)
 	}
 }
 

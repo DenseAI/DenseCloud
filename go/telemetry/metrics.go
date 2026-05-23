@@ -111,11 +111,22 @@ func (m *HTTPMetrics) Middleware() func(http.Handler) http.Handler {
 
 			start := time.Now()
 			m.inFlight.Add(1)
-			defer m.inFlight.Add(-1)
 
-			wrapped := &metricsResponseWriter{ResponseWriter: w, statusCode: http.StatusOK}
+			wrapped := &metricsResponseWriter{ResponseWriter: w}
+			defer func() {
+				statusCode := wrapped.StatusCode()
+				if rec := recover(); rec != nil {
+					if !wrapped.WroteHeader() {
+						statusCode = http.StatusInternalServerError
+					}
+					m.observe(r.Method, path, statusCode, time.Since(start).Seconds())
+					m.inFlight.Add(-1)
+					panic(rec)
+				}
+				m.observe(r.Method, path, statusCode, time.Since(start).Seconds())
+				m.inFlight.Add(-1)
+			}()
 			next.ServeHTTP(wrapped, r)
-			m.observe(r.Method, path, wrapped.statusCode, time.Since(start).Seconds())
 		})
 	}
 }
@@ -327,17 +338,36 @@ type metricsResponseWriter struct {
 	http.ResponseWriter
 	statusCode int
 	written    int64
+	wrote      bool
 }
 
 func (rw *metricsResponseWriter) WriteHeader(code int) {
+	if rw.wrote {
+		return
+	}
+	rw.wrote = true
 	rw.statusCode = code
 	rw.ResponseWriter.WriteHeader(code)
 }
 
 func (rw *metricsResponseWriter) Write(b []byte) (int, error) {
+	if !rw.wrote {
+		rw.WriteHeader(http.StatusOK)
+	}
 	n, err := rw.ResponseWriter.Write(b)
 	rw.written += int64(n)
 	return n, err
+}
+
+func (rw *metricsResponseWriter) StatusCode() int {
+	if rw.wrote {
+		return rw.statusCode
+	}
+	return http.StatusOK
+}
+
+func (rw *metricsResponseWriter) WroteHeader() bool {
+	return rw.wrote
 }
 
 func (rw *metricsResponseWriter) Flush() {
@@ -354,7 +384,17 @@ func (rw *metricsResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	return h.Hijack()
 }
 
+func (rw *metricsResponseWriter) Push(target string, opts *http.PushOptions) error {
+	if p, ok := rw.ResponseWriter.(http.Pusher); ok {
+		return p.Push(target, opts)
+	}
+	return http.ErrNotSupported
+}
+
 func (rw *metricsResponseWriter) ReadFrom(src io.Reader) (int64, error) {
+	if !rw.wrote {
+		rw.WriteHeader(http.StatusOK)
+	}
 	if rf, ok := rw.ResponseWriter.(io.ReaderFrom); ok {
 		n, err := rf.ReadFrom(src)
 		rw.written += n

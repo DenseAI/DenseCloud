@@ -1,0 +1,8 @@
+.git
+.github
+.omx
+build
+dist
+*.tgz
+*.zip
+*.log

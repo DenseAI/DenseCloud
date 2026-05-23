@@ -1,6 +1,9 @@
 package telemetry
 
 import (
+	"bufio"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -46,6 +49,86 @@ func TestHTTPMetricsMiddlewareAndHandler(t *testing.T) {
 	}
 }
 
+func TestHTTPMetricsMiddleware_RecordsPanicBeforeRepanic(t *testing.T) {
+	t.Parallel()
+
+	metrics := NewHTTPMetrics(HTTPMetricsConfig{ServiceName: "dense-test"})
+	handler := metrics.Middleware()(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		panic("boom")
+	}))
+
+	func() {
+		defer func() {
+			if rec := recover(); rec == nil {
+				t.Fatalf("expected metrics middleware to re-panic")
+			}
+		}()
+		handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/panic", nil))
+	}()
+
+	body := captureHTTPMetricsBody(metrics)
+	if !strings.Contains(body, `densecloud_http_in_flight_requests{service="dense-test"} 0`) {
+		t.Fatalf("expected in-flight gauge to return to zero, got %q", body)
+	}
+	if !strings.Contains(body, `densecloud_http_requests_total{service="dense-test",method="GET",path="/panic",status_class="5xx"} 1`) {
+		t.Fatalf("expected panic request to be recorded as 5xx, got %q", body)
+	}
+	if !strings.Contains(body, `densecloud_http_request_duration_seconds_count{service="dense-test",method="GET",path="/panic"} 1`) {
+		t.Fatalf("expected panic request duration to be recorded, got %q", body)
+	}
+}
+
+func TestHTTPMetricsResponseWriterPreservesStreamingInterfaces(t *testing.T) {
+	t.Parallel()
+
+	rec := &metricsCapabilityRecorder{ResponseRecorder: httptest.NewRecorder()}
+	wrapped := &metricsResponseWriter{ResponseWriter: rec}
+
+	flusher, ok := any(wrapped).(http.Flusher)
+	if !ok {
+		t.Fatalf("expected metrics writer to expose http.Flusher")
+	}
+	flusher.Flush()
+	if !rec.flushed {
+		t.Fatalf("expected Flush to reach underlying writer")
+	}
+
+	hijacker, ok := any(wrapped).(http.Hijacker)
+	if !ok {
+		t.Fatalf("expected metrics writer to expose http.Hijacker")
+	}
+	conn, _, err := hijacker.Hijack()
+	if err != nil {
+		t.Fatalf("Hijack() error = %v", err)
+	}
+	_ = conn.Close()
+	if !rec.hijacked {
+		t.Fatalf("expected Hijack to reach underlying writer")
+	}
+
+	pusher, ok := any(wrapped).(http.Pusher)
+	if !ok {
+		t.Fatalf("expected metrics writer to expose http.Pusher")
+	}
+	if err := pusher.Push("/asset.js", nil); err != nil {
+		t.Fatalf("Push() error = %v", err)
+	}
+	if !rec.pushed {
+		t.Fatalf("expected Push to reach underlying writer")
+	}
+
+	readerFrom, ok := any(wrapped).(io.ReaderFrom)
+	if !ok {
+		t.Fatalf("expected metrics writer to expose io.ReaderFrom")
+	}
+	if _, err := readerFrom.ReadFrom(strings.NewReader("data")); err != nil {
+		t.Fatalf("ReadFrom() error = %v", err)
+	}
+	if !rec.readFrom {
+		t.Fatalf("expected ReadFrom to reach underlying writer")
+	}
+}
+
 func TestHTTPMetricsHandler_AppendsGRPCCollectors(t *testing.T) {
 	t.Parallel()
 
@@ -68,4 +151,39 @@ func TestHTTPMetricsHandler_AppendsGRPCCollectors(t *testing.T) {
 	if !strings.Contains(body, `densecloud_grpc_request_duration_seconds_count{service="dense-test",method="/dense.Service/Call",rpc_type="unary"} 1`) {
 		t.Fatalf("expected grpc duration metric, got %q", body)
 	}
+}
+
+func captureHTTPMetricsBody(metrics *HTTPMetrics) string {
+	rec := httptest.NewRecorder()
+	metrics.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	return rec.Body.String()
+}
+
+type metricsCapabilityRecorder struct {
+	*httptest.ResponseRecorder
+	flushed  bool
+	hijacked bool
+	pushed   bool
+	readFrom bool
+}
+
+func (r *metricsCapabilityRecorder) Flush() {
+	r.flushed = true
+}
+
+func (r *metricsCapabilityRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	r.hijacked = true
+	serverConn, clientConn := net.Pipe()
+	_ = serverConn.Close()
+	return clientConn, bufio.NewReadWriter(bufio.NewReader(strings.NewReader("")), bufio.NewWriter(io.Discard)), nil
+}
+
+func (r *metricsCapabilityRecorder) Push(string, *http.PushOptions) error {
+	r.pushed = true
+	return nil
+}
+
+func (r *metricsCapabilityRecorder) ReadFrom(src io.Reader) (int64, error) {
+	r.readFrom = true
+	return io.Copy(r.ResponseRecorder, src)
 }

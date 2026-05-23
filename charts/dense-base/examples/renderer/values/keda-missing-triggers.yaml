@@ -1,0 +1,11 @@
+dense-base:
+  image:
+    repository: registry.example.invalid/dense/workload
+    tag: latest
+  service:
+    enabled: true
+    port: 8080
+  keda:
+    enabled: true
+    triggers:
+      custom: []

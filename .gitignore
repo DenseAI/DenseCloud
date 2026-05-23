@@ -1,63 +1,94 @@
-# If you prefer the allow list template instead of the deny list, see community template:
-# https://github.com/github/gitignore/blob/main/community/Golang/Go.AllowList.gitignore
+# DenseCloud local build, runtime, and editor artifacts.
 
-# Binaries for programs and plugins
+# OS / editor / IDE
+.DS_Store
+Thumbs.db
+Desktop.ini
+.idea/
+.vscode/
+*.iml
+*.swp
+*.swo
+*~
+
+# Local Codex / OMX / tool state
+.codex/
+.omx/
+.claude/
+.cache/
+
+# Local environment, credentials, and secrets
+.env
+.env.*
+!.env.example
+!.env.sample
+*.local
+*.secret
+*.secrets
+*.key
+*.pem
+*.crt
+*.csr
+*.p12
+*.pfx
+*.kubeconfig
+
+# Go workspace and generated dependency trees
+go.work
+go.work.sum
+vendor/
+
+# Go binaries, test binaries, and coverage/profiles
 *.exe
 *.exe~
 *.dll
 *.so
 *.dylib
-bin/
-minimal_e2e
-
-# Test binary, built with `go test -c`
 *.test
-
-# Code coverage profiles and other test artifacts
 *.out
 coverage.*
 *.coverprofile
 profile.cov
+*.prof
+*.pprof
+cpu.prof
+mem.prof
+/bin/
+/minimal_e2e
+/densecloud-runtime
 
-# Dependency directories
-# vendor/
-
-# Go workspace file
-go.work
-go.work.sum
-
-# env file
-.env
-.env.*
-!.env.example
-
-# Local override files
-*.local
-
-# Logs/runtime artifacts
-*.log
-*.pid
-*.kubeconfig
-
-# Local temp dirs
+# Runtime state, diagnostics, and temp files
+/data/
+/tmp/
+/run/
+/logs/
 tmp/
 .tmp/
+*.log
+*.pid
+*.tmp
+*.temp
+*.bak
+*.orig
+*.rej
 
-# OS junk
-.DS_Store
-Thumbs.db
-Desktop.ini
+# Build, package, and archive artifacts
+/build/
+/build-*/
+/cmake-build-*/
+/out/
+/dist/
+/release/
+/releases/
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.7z
+*.gz
+*.zst
+charts/**/charts/*.tgz
+charts/**/charts/*.tar.gz
 
-# Helm artifacts
-charts/*/charts/*.tgz
-charts/*/charts/*.tar.gz
-# charts/*/charts/ # Uncomment if you don't want to vendor subcharts
-
-# Internal Reports (Uncomment to hide from public)
-# DenseCloud_CTO_Report.md
-
-# Editor/IDE
-.idea/
-.vscode/
-*.swp
-*.swo
+# Local/generated reports that should not ship in release commits
+*_CTO_Report.md

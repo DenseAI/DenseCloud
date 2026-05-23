@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -119,6 +120,7 @@ func NewHTTPRuntime(cfg HTTPRuntimeConfig) (*HTTPRuntime, error) {
 	mountAPISubrouter(rootMux, apiBasePath, apiHandler)
 
 	rootHandler := http.Handler(rootMux)
+	rootHandler = densemiddleware.ContentTypeForPrefix(apiBasePath, "application/json")(rootHandler)
 	if metrics != nil {
 		rootHandler = metrics.Middleware()(rootHandler)
 	}
@@ -160,6 +162,9 @@ func (r *HTTPRuntime) Startup(ctx context.Context) error {
 			continue
 		}
 		if err := hook(ctx); err != nil {
+			if rollbackErr := r.Shutdown(ctx); rollbackErr != nil {
+				return errors.Join(err, rollbackErr)
+			}
 			return err
 		}
 	}

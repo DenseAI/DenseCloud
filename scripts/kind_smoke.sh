@@ -48,6 +48,26 @@ spec:
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
+  name: scaledobjects.keda.sh
+spec:
+  group: keda.sh
+  names:
+    kind: ScaledObject
+    plural: scaledobjects
+    singular: scaledobject
+  scope: Namespaced
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          x-kubernetes-preserve-unknown-fields: true
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
   name: servicemonitors.monitoring.coreos.com
 spec:
   group: monitoring.coreos.com
@@ -71,6 +91,7 @@ install_smoke_crds() {
   write_smoke_crds
   kubectl apply -f "${CRD_MANIFEST_PATH}" >/dev/null
   kubectl wait --for=condition=Established crd/certificates.cert-manager.io --timeout=60s >/dev/null
+  kubectl wait --for=condition=Established crd/scaledobjects.keda.sh --timeout=60s >/dev/null
   kubectl wait --for=condition=Established crd/servicemonitors.monitoring.coreos.com --timeout=60s >/dev/null
 }
 
@@ -85,7 +106,7 @@ apply_values_manifest() {
 
   kubectl create namespace "${namespace}" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
   kubectl apply -n "${namespace}" -f "${manifest_path}" >/dev/null
-  kubectl get deploy,svc,sa,ingress,networkpolicy,certificate,servicemonitor \
+  kubectl get deploy,svc,sa,ingress,networkpolicy,certificate,scaledobject,servicemonitor \
     -n "${namespace}" \
     --ignore-not-found
 }
@@ -122,3 +143,4 @@ apply_values_manifest "networkpolicy-ingress-nginx.yaml" "${NAMESPACE}-networkpo
 apply_values_manifest "networkpolicy-monitoring.yaml" "${NAMESPACE}-networkpolicy-monitoring"
 apply_values_manifest "networkpolicy-otel-collector.yaml" "${NAMESPACE}-networkpolicy-otel"
 apply_values_manifest "networkpolicy-strict.yaml" "${NAMESPACE}-networkpolicy"
+apply_values_manifest "keda-custom-trigger.yaml" "${NAMESPACE}-keda"

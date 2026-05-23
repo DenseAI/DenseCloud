@@ -118,6 +118,78 @@ func TestNewHTTPRuntime_WiresHealthMetricsAndExtensions(t *testing.T) {
 	}
 }
 
+func TestHTTPRuntime_RecordsRecoveredPanicMetricsWithDefaultMiddlewareOrder(t *testing.T) {
+	t.Parallel()
+
+	apiMux := http.NewServeMux()
+	apiMux.HandleFunc("/panic", func(http.ResponseWriter, *http.Request) {
+		panic("boom")
+	})
+
+	runtime, err := NewHTTPRuntime(HTTPRuntimeConfig{
+		ServiceName:                 "dense-test",
+		APIMux:                      apiMux,
+		RootMiddleware:              DefaultHTTPMiddleware(HTTPMiddlewarePresetConfig{}),
+		DisableRegisteredExtensions: true,
+	})
+	if err != nil {
+		t.Fatalf("NewHTTPRuntime() error = %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	runtime.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/panic", nil))
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("expected recovered panic status 500, got %d", rec.Code)
+	}
+
+	metricsRec := httptest.NewRecorder()
+	runtime.Handler().ServeHTTP(metricsRec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	body := metricsRec.Body.String()
+	if !strings.Contains(body, `densecloud_http_requests_total{service="dense-test",method="GET",path="/v1/panic",status_class="5xx"} 1`) {
+		t.Fatalf("expected panic request metric, got %q", body)
+	}
+	if !strings.Contains(body, `densecloud_http_request_duration_seconds_count{service="dense-test",method="GET",path="/v1/panic"} 1`) {
+		t.Fatalf("expected panic duration metric, got %q", body)
+	}
+}
+
+func TestHTTPRuntime_ContentTypeUsesCustomAPIBasePath(t *testing.T) {
+	t.Parallel()
+
+	rootMux := http.NewServeMux()
+	rootMux.HandleFunc("/root", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+	apiMux := http.NewServeMux()
+	apiMux.HandleFunc("/hello", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	runtime, err := NewHTTPRuntime(HTTPRuntimeConfig{
+		RootMux:                     rootMux,
+		APIMux:                      apiMux,
+		APIBasePath:                 "/api",
+		DisableHealthRoutes:         true,
+		DisableMetricsRoute:         true,
+		DisableRegisteredExtensions: true,
+	})
+	if err != nil {
+		t.Fatalf("NewHTTPRuntime() error = %v", err)
+	}
+
+	apiRec := httptest.NewRecorder()
+	runtime.Handler().ServeHTTP(apiRec, httptest.NewRequest(http.MethodGet, "/api/hello", nil))
+	if got := apiRec.Header().Get("Content-Type"); got != "application/json" {
+		t.Fatalf("expected custom API path content type, got %q", got)
+	}
+
+	rootRec := httptest.NewRecorder()
+	runtime.Handler().ServeHTTP(rootRec, httptest.NewRequest(http.MethodGet, "/root", nil))
+	if got := rootRec.Header().Get("Content-Type"); got != "" {
+		t.Fatalf("expected non-API path to leave content type unset, got %q", got)
+	}
+}
+
 func TestHTTPRuntimeStartupPropagatesErrors(t *testing.T) {
 	t.Parallel()
 
@@ -132,6 +204,80 @@ func TestHTTPRuntimeStartupPropagatesErrors(t *testing.T) {
 
 	if err := runtime.Startup(context.Background()); err == nil || err.Error() != "boom" {
 		t.Fatalf("Startup() error = %v, want boom", err)
+	}
+}
+
+func TestHTTPRuntimeStartupFailureRollsBackShutdownHooks(t *testing.T) {
+	t.Parallel()
+
+	var order []string
+	runtime, err := NewHTTPRuntime(HTTPRuntimeConfig{
+		DisableRegisteredExtensions: true,
+		StartupHooks: []StartupHook{
+			func(context.Context) error {
+				order = append(order, "startup-ok")
+				return nil
+			},
+			func(context.Context) error {
+				order = append(order, "startup-fail")
+				return errors.New("boom")
+			},
+		},
+		ShutdownHooks: []ShutdownHook{
+			func(context.Context) error {
+				order = append(order, "shutdown-a")
+				return nil
+			},
+			func(context.Context) error {
+				order = append(order, "shutdown-b")
+				return nil
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewHTTPRuntime() error = %v", err)
+	}
+
+	if err := runtime.Startup(context.Background()); err == nil || err.Error() != "boom" {
+		t.Fatalf("Startup() error = %v, want boom", err)
+	}
+	want := strings.Join([]string{"startup-ok", "startup-fail", "shutdown-a", "shutdown-b"}, ",")
+	if got := strings.Join(order, ","); got != want {
+		t.Fatalf("startup rollback order = %s, want %s", got, want)
+	}
+
+	readyRec := httptest.NewRecorder()
+	runtime.Handler().ServeHTTP(readyRec, httptest.NewRequest(http.MethodGet, "/health/ready", nil))
+	if readyRec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected readiness to fail-close after startup rollback, got %d", readyRec.Code)
+	}
+}
+
+func TestHTTPRuntimeExtensionStartupFailureRollsBack(t *testing.T) {
+	t.Parallel()
+
+	stopped := false
+	ext := runtimeTestExtension{
+		name: "failing-extension",
+		startup: func(context.Context) error {
+			return errors.New("extension startup failed")
+		},
+		shutdown: func(context.Context) error {
+			stopped = true
+			return nil
+		},
+	}
+	runtime := &HTTPRuntime{
+		health:        NewHealthRegistry(),
+		startupHooks:  []StartupHook{ext.Startup},
+		shutdownHooks: []ShutdownHook{ext.Shutdown},
+	}
+
+	if err := runtime.Startup(context.Background()); err == nil || err.Error() != "extension startup failed" {
+		t.Fatalf("Startup() error = %v, want extension startup failed", err)
+	}
+	if !stopped {
+		t.Fatalf("expected extension shutdown hook to run during startup rollback")
 	}
 }
 
@@ -181,6 +327,34 @@ func TestHealthRegistryRegisterDependencyAcrossPhases(t *testing.T) {
 	registry.phaseHandler("ready").ServeHTTP(readyRec, httptest.NewRequest(http.MethodGet, "/health/ready", nil))
 	if readyRec.Code != http.StatusOK {
 		t.Fatalf("expected readiness dependency to pass, got %d", readyRec.Code)
+	}
+}
+
+func TestHealthRegistryLiveReadyAndDependencyFailure(t *testing.T) {
+	t.Parallel()
+
+	registry := NewHealthRegistry()
+	registry.RegisterLiveness("process", func(context.Context) error { return nil })
+	registry.RegisterReadiness("db", func(context.Context) error { return errors.New("db down") })
+	registry.MarkStarted()
+
+	liveRec := httptest.NewRecorder()
+	registry.phaseHandler("live").ServeHTTP(liveRec, httptest.NewRequest(http.MethodGet, "/health/live", nil))
+	if liveRec.Code != http.StatusOK {
+		t.Fatalf("expected liveness to remain process-oriented, got %d", liveRec.Code)
+	}
+
+	readyRec := httptest.NewRecorder()
+	registry.phaseHandler("ready").ServeHTTP(readyRec, httptest.NewRequest(http.MethodGet, "/health/ready", nil))
+	if readyRec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected readiness dependency failure to fail-close, got %d", readyRec.Code)
+	}
+
+	registry.MarkShuttingDown()
+	liveRec = httptest.NewRecorder()
+	registry.phaseHandler("live").ServeHTTP(liveRec, httptest.NewRequest(http.MethodGet, "/health/live", nil))
+	if liveRec.Code != http.StatusOK {
+		t.Fatalf("expected liveness to remain OK during shutdown, got %d", liveRec.Code)
 	}
 }
 
