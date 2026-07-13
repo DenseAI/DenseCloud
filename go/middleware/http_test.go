@@ -187,6 +187,32 @@ func TestLoggingRecordsStreamingStatusAndBytes(t *testing.T) {
 	}
 }
 
+func TestLoggingKeepsFirstStatusCode(t *testing.T) {
+	original := slog.Default()
+	var logs bytes.Buffer
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, nil)))
+	defer slog.SetDefault(original)
+
+	handler := Logging()(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusAccepted)
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/jobs", nil))
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected response status 202, got %d", rec.Code)
+	}
+
+	records := decodeJSONLogLines(t, logs.Bytes())
+	if len(records) != 1 {
+		t.Fatalf("expected one request log, got %d: %s", len(records), logs.String())
+	}
+	if got, _ := records[0]["status_code"].(float64); int(got) != http.StatusAccepted {
+		t.Fatalf("expected logged status 202, got %v", records[0]["status_code"])
+	}
+}
+
 func TestCircuitBreakerPreservesFlusher(t *testing.T) {
 	cfg := DefaultCircuitBreakerConfig()
 	cfg.ReadyToTrip = 100

@@ -228,14 +228,22 @@ type responseWriter struct {
 	http.ResponseWriter
 	statusCode int
 	written    int64
+	wrote      bool
 }
 
 func (rw *responseWriter) WriteHeader(code int) {
+	if rw.wrote {
+		return
+	}
+	rw.wrote = true
 	rw.statusCode = code
 	rw.ResponseWriter.WriteHeader(code)
 }
 
 func (rw *responseWriter) Write(b []byte) (int, error) {
+	if !rw.wrote {
+		rw.WriteHeader(http.StatusOK)
+	}
 	n, err := rw.ResponseWriter.Write(b)
 	rw.written += int64(n)
 	return n, err

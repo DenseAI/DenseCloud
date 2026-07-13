@@ -166,6 +166,43 @@ func TestRunBlockingExecutesStartupHooksBeforeServing(t *testing.T) {
 	}
 }
 
+func TestRunBlockingRunsShutdownHooksWhenStartupFails(t *testing.T) {
+	t.Parallel()
+
+	startupErr := errors.New("startup failed")
+	shutdownErr := errors.New("shutdown failed")
+	var cleanupRan atomic.Bool
+
+	runner, err := NewRunner(Options{
+		HTTPServer: &http.Server{Addr: "127.0.0.1:0"},
+		StartupHooks: []StartupHook{
+			func(context.Context) error { return nil },
+			func(context.Context) error { return startupErr },
+		},
+		ShutdownHooks: []ShutdownHook{
+			func(context.Context) error {
+				cleanupRan.Store(true)
+				return shutdownErr
+			},
+		},
+		ShutdownTimeout: 2 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("NewRunner() error = %v", err)
+	}
+
+	err = runner.RunBlocking(context.Background())
+	if !cleanupRan.Load() {
+		t.Fatalf("expected shutdown hook to run after startup failure")
+	}
+	if !errors.Is(err, startupErr) {
+		t.Fatalf("RunBlocking() error = %v, want startup error", err)
+	}
+	if !errors.Is(err, shutdownErr) {
+		t.Fatalf("RunBlocking() error = %v, want shutdown error", err)
+	}
+}
+
 func TestShutdownUsesGracefulGRPCServerWhenAvailable(t *testing.T) {
 	t.Parallel()
 

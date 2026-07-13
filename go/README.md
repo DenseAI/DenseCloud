@@ -60,6 +60,7 @@ _ = runner.RunBlocking(context.Background())
 - `server.HealthRegistry.RegisterDependency(...)` lets product runtimes wire Redis, worker, exporter readiness checks into DenseCloud-owned `/health*` phases without re-implementing probe handlers.
 - `server.DefaultHTTPMiddleware(...)` provides the canonical DenseCloud root HTTP middleware order for shared chassis concerns.
 - `middleware.GRPCServerPreset(...)` provides the canonical gRPC interceptor bundle while leaving auth and business interceptors to product repos.
+- `server.NewHTTPRuntime(...)` bounds default HTTP metric cardinality by collapsing API subpaths such as `/v1/models/abc` to `/v1/*`. Consumers that need route-level labels can set `HTTPRuntimeConfig.MetricsPathLabeler`.
 - `telemetry.NewGRPCMetrics(...)` can be appended to the shared `/metrics` endpoint through `HTTPMetricsConfig.Collectors` and populated by `middleware.GRPCMetricsUnary` / `middleware.GRPCMetricsStream`.
 
 ## Versioning

@@ -38,11 +38,11 @@ func GRPCServerPreset(cfg GRPCServerPresetConfig) ([]grpc.UnaryServerInterceptor
 		GRPCLoggingStream(),
 	}
 
-	unary = append(unary, cfg.ExtraUnaryInterceptors...)
-	stream = append(stream, cfg.ExtraStreamInterceptors...)
-
 	unary = append(unary, GRPCMetricsUnary(cfg.Metrics))
 	stream = append(stream, GRPCMetricsStream(cfg.Metrics))
+
+	unary = append(unary, cfg.ExtraUnaryInterceptors...)
+	stream = append(stream, cfg.ExtraStreamInterceptors...)
 
 	if cfg.CircuitBreaker != nil {
 		unary = append(unary, GRPCCircuitBreakerUnary(*cfg.CircuitBreaker))

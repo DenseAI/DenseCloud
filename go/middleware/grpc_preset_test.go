@@ -4,7 +4,10 @@ import (
 	"context"
 	"testing"
 
+	"github.com/DenseAI/DenseCloud/go/telemetry"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 func TestGRPCServerPreset_OrderAndOptionalLayers(t *testing.T) {
@@ -42,4 +45,36 @@ func TestGRPCServerPreset_OrderAndOptionalLayers(t *testing.T) {
 	if len(streamNoExtras) != 5 {
 		t.Fatalf("expected 5 stream interceptors without extras, got %d", len(streamNoExtras))
 	}
+}
+
+func TestGRPCServerPreset_RecordsExtraInterceptorRejections(t *testing.T) {
+	t.Parallel()
+
+	metrics := telemetry.NewGRPCMetrics(telemetry.GRPCMetricsConfig{ServiceName: "dense-test"})
+	unary, _ := GRPCServerPreset(GRPCServerPresetConfig{
+		Metrics: metrics,
+		ExtraUnaryInterceptors: []grpc.UnaryServerInterceptor{
+			func(context.Context, any, *grpc.UnaryServerInfo, grpc.UnaryHandler) (any, error) {
+				return nil, status.Error(codes.PermissionDenied, "blocked")
+			},
+		},
+	})
+
+	interceptor := ChainUnaryInterceptors(unary...)
+	_, err := interceptor(
+		context.Background(),
+		nil,
+		&grpc.UnaryServerInfo{FullMethod: "/dense.Test/Blocked"},
+		func(context.Context, any) (any, error) {
+			t.Fatalf("handler should not be called after extra interceptor rejection")
+			return nil, nil
+		},
+	)
+	if status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("expected PermissionDenied, got %v", err)
+	}
+
+	body := captureGRPCMetricsBody(metrics)
+	requireMetricContains(t, body, `densecloud_grpc_requests_total{service="dense-test",method="/dense.Test/Blocked",rpc_type="unary",code="PermissionDenied"} 1`)
+	requireMetricContains(t, body, `densecloud_grpc_request_errors_total{service="dense-test",method="/dense.Test/Blocked",rpc_type="unary",code="PermissionDenied"} 1`)
 }

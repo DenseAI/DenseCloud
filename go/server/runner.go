@@ -67,6 +67,11 @@ func (r *Runner) RunBlocking(ctx context.Context) error {
 			continue
 		}
 		if err := hook(ctx); err != nil {
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), r.opts.ShutdownTimeout)
+			defer cancel()
+			if shutdownErr := r.Shutdown(shutdownCtx); shutdownErr != nil {
+				return errors.Join(err, shutdownErr)
+			}
 			return err
 		}
 	}

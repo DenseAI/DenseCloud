@@ -22,6 +22,7 @@ type HTTPRuntimeConfig struct {
 	Health                      *HealthRegistry
 	Metrics                     *telemetry.HTTPMetrics
 	MetricsPath                 string
+	MetricsPathLabeler          func(*http.Request) string
 	DisableHealthRoutes         bool
 	DisableMetricsRoute         bool
 	DisableRegisteredExtensions bool
@@ -61,6 +62,9 @@ func NewHTTPRuntime(cfg HTTPRuntimeConfig) (*HTTPRuntime, error) {
 		apiBasePath = "/v1"
 	}
 	apiBasePath = normalizeRoutePrefix(apiBasePath)
+	if err := validateRoutePrefix("APIBasePath", apiBasePath); err != nil {
+		return nil, err
+	}
 
 	health := cfg.Health
 	if health == nil {
@@ -75,12 +79,21 @@ func NewHTTPRuntime(cfg HTTPRuntimeConfig) (*HTTPRuntime, error) {
 	if metricsPath == "" {
 		metricsPath = "/metrics"
 	}
+	metricsPath = normalizeRoutePrefix(metricsPath)
+	if err := validateRoutePrefix("MetricsPath", metricsPath); err != nil {
+		return nil, err
+	}
 	registerMetrics := !cfg.DisableMetricsRoute
 
 	metrics := cfg.Metrics
 	if metrics == nil && registerMetrics {
 		metrics = telemetry.NewHTTPMetrics(telemetry.HTTPMetricsConfig{
 			ServiceName: cfg.ServiceName,
+			PathLabeler: metricsPathLabelerOrDefault(
+				cfg.MetricsPathLabeler,
+				apiBasePath,
+				metricsPath,
+			),
 			IgnorePaths: []string{
 				"/health",
 				"/health/live",
@@ -121,10 +134,10 @@ func NewHTTPRuntime(cfg HTTPRuntimeConfig) (*HTTPRuntime, error) {
 
 	rootHandler := http.Handler(rootMux)
 	rootHandler = densemiddleware.ContentTypeForPrefix(apiBasePath, "application/json")(rootHandler)
+	rootHandler = densemiddleware.Chain(cfg.RootMiddleware...)(rootHandler)
 	if metrics != nil {
 		rootHandler = metrics.Middleware()(rootHandler)
 	}
-	rootHandler = densemiddleware.Chain(cfg.RootMiddleware...)(rootHandler)
 	runtime.handler = rootHandler
 
 	return runtime, nil
@@ -210,10 +223,61 @@ func normalizeRoutePrefix(prefix string) string {
 	if !strings.HasPrefix(prefix, "/") {
 		prefix = "/" + prefix
 	}
+	return strings.TrimSuffix(prefix, "/")
+}
+
+func validateRoutePrefix(name, prefix string) error {
 	if strings.Contains(prefix, "//") {
+		return fmt.Errorf("%s must not contain empty path segments: %q", name, prefix)
+	}
+	return nil
+}
+
+func metricsPathLabelerOrDefault(
+	configured func(*http.Request) string,
+	apiBasePath string,
+	metricsPath string,
+) func(*http.Request) string {
+	if configured != nil {
+		return configured
+	}
+
+	apiBasePath = normalizeLabelPrefix(apiBasePath)
+	metricsPath = normalizeLabelPrefix(metricsPath)
+	return func(r *http.Request) string {
+		if r == nil || r.URL == nil || r.URL.Path == "" {
+			return "/"
+		}
+		path := r.URL.Path
+		if path == metricsPath || path == "/health" || strings.HasPrefix(path, "/health/") {
+			return path
+		}
+		if routePathHasPrefix(path, apiBasePath) {
+			if apiBasePath == "/" {
+				return "/*"
+			}
+			if path == apiBasePath {
+				return apiBasePath
+			}
+			return apiBasePath + "/*"
+		}
+		return path
+	}
+}
+
+func normalizeLabelPrefix(prefix string) string {
+	prefix = normalizeRoutePrefix(prefix)
+	if prefix == "" {
 		return "/"
 	}
-	return strings.TrimSuffix(prefix, "/")
+	return prefix
+}
+
+func routePathHasPrefix(path, prefix string) bool {
+	if prefix == "" || prefix == "/" {
+		return true
+	}
+	return path == prefix || strings.HasPrefix(path, prefix+"/")
 }
 
 // MustNewHTTPRuntime is a convenience helper for bootstrapping examples/tests.

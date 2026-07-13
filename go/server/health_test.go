@@ -145,11 +145,116 @@ func TestHTTPRuntime_RecordsRecoveredPanicMetricsWithDefaultMiddlewareOrder(t *t
 	metricsRec := httptest.NewRecorder()
 	runtime.Handler().ServeHTTP(metricsRec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
 	body := metricsRec.Body.String()
-	if !strings.Contains(body, `densecloud_http_requests_total{service="dense-test",method="GET",path="/v1/panic",status_class="5xx"} 1`) {
+	if !strings.Contains(body, `densecloud_http_requests_total{service="dense-test",method="GET",path="/v1/*",status_class="5xx"} 1`) {
 		t.Fatalf("expected panic request metric, got %q", body)
 	}
-	if !strings.Contains(body, `densecloud_http_request_duration_seconds_count{service="dense-test",method="GET",path="/v1/panic"} 1`) {
+	if !strings.Contains(body, `densecloud_http_request_duration_seconds_count{service="dense-test",method="GET",path="/v1/*"} 1`) {
 		t.Fatalf("expected panic duration metric, got %q", body)
+	}
+}
+
+func TestHTTPRuntime_CustomMetricsPathLabelerCanPreserveRouteDetail(t *testing.T) {
+	t.Parallel()
+
+	apiMux := http.NewServeMux()
+	apiMux.HandleFunc("/panic", func(http.ResponseWriter, *http.Request) {
+		panic("boom")
+	})
+
+	runtime, err := NewHTTPRuntime(HTTPRuntimeConfig{
+		ServiceName:                 "dense-test",
+		APIMux:                      apiMux,
+		RootMiddleware:              DefaultHTTPMiddleware(HTTPMiddlewarePresetConfig{}),
+		MetricsPathLabeler:          func(r *http.Request) string { return r.URL.Path },
+		DisableRegisteredExtensions: true,
+	})
+	if err != nil {
+		t.Fatalf("NewHTTPRuntime() error = %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	runtime.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/panic", nil))
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("expected recovered panic status 500, got %d", rec.Code)
+	}
+
+	metricsRec := httptest.NewRecorder()
+	runtime.Handler().ServeHTTP(metricsRec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	body := metricsRec.Body.String()
+	if !strings.Contains(body, `densecloud_http_requests_total{service="dense-test",method="GET",path="/v1/panic",status_class="5xx"} 1`) {
+		t.Fatalf("expected custom path labeler to preserve route detail, got %q", body)
+	}
+}
+
+func TestHTTPRuntime_DefaultMetricsPathLabelerBoundsAPICardinality(t *testing.T) {
+	t.Parallel()
+
+	apiMux := http.NewServeMux()
+	apiMux.HandleFunc("/models/", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusAccepted)
+	})
+
+	runtime, err := NewHTTPRuntime(HTTPRuntimeConfig{
+		ServiceName:                 "dense-test",
+		APIMux:                      apiMux,
+		DisableRegisteredExtensions: true,
+	})
+	if err != nil {
+		t.Fatalf("NewHTTPRuntime() error = %v", err)
+	}
+
+	for _, path := range []string{"/v1/models/alpha", "/v1/models/beta"} {
+		rec := httptest.NewRecorder()
+		runtime.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, path, nil))
+		if rec.Code != http.StatusAccepted {
+			t.Fatalf("request %s status = %d, want %d", path, rec.Code, http.StatusAccepted)
+		}
+	}
+
+	metricsRec := httptest.NewRecorder()
+	runtime.Handler().ServeHTTP(metricsRec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	body := metricsRec.Body.String()
+	if !strings.Contains(body, `densecloud_http_requests_total{service="dense-test",method="POST",path="/v1/*",status_class="2xx"} 2`) {
+		t.Fatalf("expected API requests to collapse to bounded label, got %q", body)
+	}
+	if strings.Contains(body, `path="/v1/models/alpha"`) || strings.Contains(body, `path="/v1/models/beta"`) {
+		t.Fatalf("did not expect raw API paths in default runtime metrics, got %q", body)
+	}
+}
+
+func TestHTTPRuntime_RecordsRootMiddlewareEarlyRejections(t *testing.T) {
+	t.Parallel()
+
+	runtime, err := NewHTTPRuntime(HTTPRuntimeConfig{
+		ServiceName: "dense-test",
+		RootMiddleware: []func(http.Handler) http.Handler{
+			func(next http.Handler) http.Handler {
+				return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if r.URL.Path == "/metrics" {
+						next.ServeHTTP(w, r)
+						return
+					}
+					http.Error(w, "blocked", http.StatusUnauthorized)
+				})
+			},
+		},
+		DisableRegisteredExtensions: true,
+	})
+	if err != nil {
+		t.Fatalf("NewHTTPRuntime() error = %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	runtime.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/blocked/123", nil))
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected middleware rejection status 401, got %d", rec.Code)
+	}
+
+	metricsRec := httptest.NewRecorder()
+	runtime.Handler().ServeHTTP(metricsRec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	body := metricsRec.Body.String()
+	if !strings.Contains(body, `densecloud_http_requests_total{service="dense-test",method="GET",path="/v1/*",status_class="4xx"} 1`) {
+		t.Fatalf("expected early middleware rejection metric, got %q", body)
 	}
 }
 
@@ -187,6 +292,24 @@ func TestHTTPRuntime_ContentTypeUsesCustomAPIBasePath(t *testing.T) {
 	runtime.Handler().ServeHTTP(rootRec, httptest.NewRequest(http.MethodGet, "/root", nil))
 	if got := rootRec.Header().Get("Content-Type"); got != "" {
 		t.Fatalf("expected non-API path to leave content type unset, got %q", got)
+	}
+}
+
+func TestNewHTTPRuntimeRejectsInvalidRoutePrefixes(t *testing.T) {
+	t.Parallel()
+
+	if _, err := NewHTTPRuntime(HTTPRuntimeConfig{
+		APIBasePath:                 "/api//v1",
+		DisableRegisteredExtensions: true,
+	}); err == nil || !strings.Contains(err.Error(), "APIBasePath") {
+		t.Fatalf("expected invalid APIBasePath error, got %v", err)
+	}
+
+	if _, err := NewHTTPRuntime(HTTPRuntimeConfig{
+		MetricsPath:                 "/internal//metrics",
+		DisableRegisteredExtensions: true,
+	}); err == nil || !strings.Contains(err.Error(), "MetricsPath") {
+		t.Fatalf("expected invalid MetricsPath error, got %v", err)
 	}
 }
 
