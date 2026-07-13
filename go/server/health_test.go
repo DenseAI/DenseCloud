@@ -6,8 +6,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/DenseAI/DenseCloud/go/telemetry"
 )
 
 func TestHealthRegistryLifecycle(t *testing.T) {
@@ -129,7 +132,7 @@ func TestHTTPRuntime_RecordsRecoveredPanicMetricsWithDefaultMiddlewareOrder(t *t
 	runtime, err := NewHTTPRuntime(HTTPRuntimeConfig{
 		ServiceName:                 "dense-test",
 		APIMux:                      apiMux,
-		RootMiddleware:              DefaultHTTPMiddleware(HTTPMiddlewarePresetConfig{}),
+		MiddlewarePreset:            &HTTPMiddlewarePresetConfig{},
 		DisableRegisteredExtensions: true,
 	})
 	if err != nil {
@@ -140,6 +143,9 @@ func TestHTTPRuntime_RecordsRecoveredPanicMetricsWithDefaultMiddlewareOrder(t *t
 	runtime.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/panic", nil))
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("expected recovered panic status 500, got %d", rec.Code)
+	}
+	if requestID := rec.Header().Get("X-Request-ID"); requestID == "" {
+		t.Fatalf("expected runtime middleware preset to set a request ID")
 	}
 
 	metricsRec := httptest.NewRecorder()
@@ -219,6 +225,32 @@ func TestHTTPRuntime_DefaultMetricsPathLabelerBoundsAPICardinality(t *testing.T)
 	}
 	if strings.Contains(body, `path="/v1/models/alpha"`) || strings.Contains(body, `path="/v1/models/beta"`) {
 		t.Fatalf("did not expect raw API paths in default runtime metrics, got %q", body)
+	}
+}
+
+func TestHTTPRuntime_DefaultMetricsIncludesAdditionalCollectors(t *testing.T) {
+	t.Parallel()
+
+	grpcMetrics := telemetry.NewGRPCMetrics(telemetry.GRPCMetricsConfig{ServiceName: "dense-test"})
+	grpcMetrics.BeginRPC()
+	grpcMetrics.ObserveRPC("/dense.Test/Check", "unary", "OK", 0.01)
+
+	runtime, err := NewHTTPRuntime(HTTPRuntimeConfig{
+		ServiceName:                 "dense-test",
+		MetricsCollectors:           []telemetry.PrometheusCollector{grpcMetrics},
+		DisableRegisteredExtensions: true,
+	})
+	if err != nil {
+		t.Fatalf("NewHTTPRuntime() error = %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	runtime.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected metrics status 200, got %d", rec.Code)
+	}
+	if body := rec.Body.String(); !strings.Contains(body, `densecloud_grpc_requests_total{service="dense-test",method="/dense.Test/Check",rpc_type="unary",code="OK"} 1`) {
+		t.Fatalf("expected gRPC collector on default metrics endpoint, got %q", body)
 	}
 }
 
@@ -376,6 +408,50 @@ func TestHTTPRuntimeStartupFailureRollsBackShutdownHooks(t *testing.T) {
 	}
 }
 
+func TestHTTPRuntimeBeginShutdownFailsReadinessBeforeCleanup(t *testing.T) {
+	t.Parallel()
+
+	shutdownCalls := 0
+	runtime, err := NewHTTPRuntime(HTTPRuntimeConfig{
+		DisableMetricsRoute:         true,
+		DisableRegisteredExtensions: true,
+		ShutdownHooks: []ShutdownHook{
+			func(context.Context) error {
+				shutdownCalls++
+				return nil
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewHTTPRuntime() error = %v", err)
+	}
+	if err := runtime.Startup(context.Background()); err != nil {
+		t.Fatalf("Startup() error = %v", err)
+	}
+
+	if err := runtime.BeginShutdown(context.Background()); err != nil {
+		t.Fatalf("BeginShutdown() error = %v", err)
+	}
+	if shutdownCalls != 0 {
+		t.Fatalf("cleanup ran before transport drain")
+	}
+	readyRec := httptest.NewRecorder()
+	runtime.Handler().ServeHTTP(readyRec, httptest.NewRequest(http.MethodGet, "/health/ready", nil))
+	if readyRec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("readiness status = %d, want %d", readyRec.Code, http.StatusServiceUnavailable)
+	}
+
+	if err := runtime.Shutdown(context.Background()); err != nil {
+		t.Fatalf("Shutdown() error = %v", err)
+	}
+	if err := runtime.Shutdown(context.Background()); err != nil {
+		t.Fatalf("second Shutdown() error = %v", err)
+	}
+	if shutdownCalls != 1 {
+		t.Fatalf("shutdown hook calls = %d, want 1", shutdownCalls)
+	}
+}
+
 func TestHTTPRuntimeExtensionStartupFailureRollsBack(t *testing.T) {
 	t.Parallel()
 
@@ -478,6 +554,129 @@ func TestHealthRegistryLiveReadyAndDependencyFailure(t *testing.T) {
 	registry.phaseHandler("live").ServeHTTP(liveRec, httptest.NewRequest(http.MethodGet, "/health/live", nil))
 	if liveRec.Code != http.StatusOK {
 		t.Fatalf("expected liveness to remain OK during shutdown, got %d", liveRec.Code)
+	}
+}
+
+func TestHTTPRuntimeHealthCheckTimeoutFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	release := make(chan struct{})
+	defer close(release)
+	health := NewHealthRegistry(WithHealthCheckTimeout(time.Second))
+
+	runtime, err := NewHTTPRuntime(HTTPRuntimeConfig{
+		Health:                      health,
+		HealthCheckTimeout:          20 * time.Millisecond,
+		DisableMetricsRoute:         true,
+		DisableRegisteredExtensions: true,
+	})
+	if err != nil {
+		t.Fatalf("NewHTTPRuntime() error = %v", err)
+	}
+	runtime.Health().RegisterReadiness("stuck", func(context.Context) error {
+		<-release
+		return nil
+	})
+	if err := runtime.Startup(context.Background()); err != nil {
+		t.Fatalf("Startup() error = %v", err)
+	}
+
+	started := time.Now()
+	rec := httptest.NewRecorder()
+	runtime.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/health/ready", nil))
+	if elapsed := time.Since(started); elapsed > 500*time.Millisecond {
+		t.Fatalf("health timeout took %s, expected a bounded response", elapsed)
+	}
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected timed out health check to fail closed, got %d", rec.Code)
+	}
+	if body := rec.Body.String(); !strings.Contains(body, `"name":"stuck"`) || !strings.Contains(body, "timed out after 20ms") {
+		t.Fatalf("expected named timeout failure in health report, got %q", body)
+	}
+}
+
+func TestHealthRegistrySuppressesOverlappingTimedOutChecks(t *testing.T) {
+	t.Parallel()
+
+	release := make(chan struct{})
+	finished := make(chan struct{})
+	var calls atomic.Int32
+	registry := NewHealthRegistry(WithHealthCheckTimeout(20 * time.Millisecond))
+	registry.RegisterReadiness("stuck", func(context.Context) error {
+		if calls.Add(1) == 1 {
+			<-release
+			close(finished)
+		}
+		return nil
+	})
+	registry.MarkStarted()
+
+	first := httptest.NewRecorder()
+	registry.phaseHandler("ready").ServeHTTP(first, httptest.NewRequest(http.MethodGet, "/health/ready", nil))
+	if first.Code != http.StatusServiceUnavailable {
+		t.Fatalf("first readiness status = %d, want %d", first.Code, http.StatusServiceUnavailable)
+	}
+
+	second := httptest.NewRecorder()
+	registry.phaseHandler("ready").ServeHTTP(second, httptest.NewRequest(http.MethodGet, "/health/ready", nil))
+	if second.Code != http.StatusServiceUnavailable {
+		t.Fatalf("overlapping readiness status = %d, want %d", second.Code, http.StatusServiceUnavailable)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("health check calls = %d, want one in-flight call", calls.Load())
+	}
+	if body := second.Body.String(); !strings.Contains(body, "still running from previous evaluation") {
+		t.Fatalf("expected overlapping-check failure, got %q", body)
+	}
+
+	close(release)
+	<-finished
+	third := httptest.NewRecorder()
+	registry.phaseHandler("ready").ServeHTTP(third, httptest.NewRequest(http.MethodGet, "/health/ready", nil))
+	if third.Code != http.StatusOK {
+		t.Fatalf("readiness after stuck check exits = %d, want %d", third.Code, http.StatusOK)
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("health check calls after recovery = %d, want 2", calls.Load())
+	}
+}
+
+func TestHealthRegistryCheckPanicFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	registry := NewHealthRegistry()
+	registry.RegisterReadiness("panic", func(context.Context) error {
+		panic("boom")
+	})
+	registry.MarkStarted()
+
+	rec := httptest.NewRecorder()
+	registry.phaseHandler("ready").ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/health/ready", nil))
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected panicking health check to fail closed, got %d", rec.Code)
+	}
+	if body := rec.Body.String(); !strings.Contains(body, "health check panicked: boom") {
+		t.Fatalf("expected panic failure in health report, got %q", body)
+	}
+}
+
+func TestHealthRegistryDistinguishesRequestCancellation(t *testing.T) {
+	t.Parallel()
+
+	registry := NewHealthRegistry(WithHealthCheckTimeout(time.Second))
+	registry.RegisterLiveness("blocked", func(ctx context.Context) error {
+		<-ctx.Done()
+		return ctx.Err()
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	report, ok := registry.evaluate(ctx, "live")
+	if ok || report.Status != "unavailable" {
+		t.Fatalf("expected canceled health evaluation to fail closed, got %#v", report)
+	}
+	if got := report.Checks[0].Error; got != context.Canceled.Error() {
+		t.Fatalf("health error = %q, want %q", got, context.Canceled.Error())
 	}
 }
 

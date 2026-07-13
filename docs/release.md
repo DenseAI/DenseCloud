@@ -1,16 +1,23 @@
 # DenseCloud Release Guide
 
 This guide covers the public release path for DenseCloud artifacts. DenseCloud
-publishes source, a Go module, and the `dense-base` Helm library chart. It does
-not publish a standalone product runtime image.
+publishes source, a Go module, and the `dense-base` Helm library chart. The
+repository Dockerfile builds a local or CI reference validation image only; it
+is not a published DenseCloud release artifact.
 
 ## Public release flow
 
 1. Complete the OSS checklist in `docs/oss-release-checklist.md`.
 2. Ensure CI is green on the commit to be released.
-3. Tag the repository root with a semantic version.
-4. Publish a GitHub Release with upgrade notes.
-5. Publish the Helm chart artifact.
+3. Run the release gates locally or on the release branch when possible:
+   - `go test ./...`
+   - `go vet ./...`
+   - `bash scripts/helm_matrix.sh`
+   - `bash scripts/docker_smoke.sh`
+   - `bash scripts/kind_smoke.sh`
+4. Tag the repository root with a semantic version.
+5. Publish a GitHub Release with upgrade notes.
+6. Publish the Helm chart artifact.
 
 ## Go module release
 
@@ -46,5 +53,10 @@ dependencies:
 
 - Root git tags version the Go module.
 - Chart versions are managed in `charts/dense-base/Chart.yaml`.
+- The Dockerfile reference image validates DenseCloud's shared health, metrics,
+  and `/v1/hello` contracts in local and CI smoke runs only.
 - Docker image publication belongs in downstream workload repositories that
   consume DenseCloud.
+- cert-manager rotation support stops at chart resources and reloader wiring.
+  Secret reload behavior and zero-downtime certificate qualification stay with
+  the consuming product runtime.

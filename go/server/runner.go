@@ -32,12 +32,13 @@ type ShutdownHook func(context.Context) error
 
 // Options define shared server runtime behavior.
 type Options struct {
-	HTTPServer      *http.Server
-	GRPCServer      GRPCServer
-	EnableGRPC      bool
-	ShutdownTimeout time.Duration
-	StartupHooks    []StartupHook
-	ShutdownHooks   []ShutdownHook
+	HTTPServer       *http.Server
+	GRPCServer       GRPCServer
+	EnableGRPC       bool
+	ShutdownTimeout  time.Duration
+	StartupHooks     []StartupHook
+	PreShutdownHooks []ShutdownHook
+	ShutdownHooks    []ShutdownHook
 }
 
 // Runner starts/stops HTTP and optional gRPC with signal-aware graceful shutdown.
@@ -118,10 +119,23 @@ func (r *Runner) RunBlocking(ctx context.Context) error {
 // Shutdown gracefully stops HTTP, gRPC and product-defined hooks.
 func (r *Runner) Shutdown(ctx context.Context) error {
 	var firstErr error
+	for _, hook := range r.opts.PreShutdownHooks {
+		if hook == nil {
+			continue
+		}
+		if err := hook(ctx); err != nil {
+			slog.Warn("pre-shutdown hook error", slog.String("error", err.Error()))
+			if firstErr == nil {
+				firstErr = err
+			}
+		}
+	}
 
 	if err := r.opts.HTTPServer.Shutdown(ctx); err != nil && err != http.ErrServerClosed {
-		firstErr = err
 		slog.Warn("HTTP shutdown error", slog.String("error", err.Error()))
+		if firstErr == nil {
+			firstErr = err
+		}
 	}
 
 	if r.opts.EnableGRPC && r.opts.GRPCServer != nil {

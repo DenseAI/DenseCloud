@@ -39,10 +39,10 @@ _ = logger
 
 runtime, _ := server.NewHTTPRuntime(server.HTTPRuntimeConfig{
     ServiceName: "densediffusion",
-    RootMiddleware: server.DefaultHTTPMiddleware(server.HTTPMiddlewarePresetConfig{
+    MiddlewarePreset: &server.HTTPMiddlewarePresetConfig{
         TracerName:     "densediffusion",
         RequestTimeout: 120*time.Second,
-    }),
+    },
 })
 runtime.APIMux().HandleFunc("/models", func(w http.ResponseWriter, r *http.Request) {})
 
@@ -50,6 +50,7 @@ httpServer := &http.Server{Addr: ":8080", Handler: runtime.Handler()}
 runner, _ := server.NewRunner(server.Options{
     HTTPServer: httpServer,
     StartupHooks: []server.StartupHook{runtime.Startup},
+    PreShutdownHooks: []server.ShutdownHook{runtime.BeginShutdown},
     ShutdownHooks: []server.ShutdownHook{runtime.Shutdown},
 })
 _ = runner.RunBlocking(context.Background())
@@ -58,10 +59,12 @@ _ = runner.RunBlocking(context.Background())
 ## Shared chassis helpers
 
 - `server.HealthRegistry.RegisterDependency(...)` lets product runtimes wire Redis, worker, exporter readiness checks into DenseCloud-owned `/health*` phases without re-implementing probe handlers.
-- `server.DefaultHTTPMiddleware(...)` provides the canonical DenseCloud root HTTP middleware order for shared chassis concerns.
+- `HTTPRuntimeConfig.MiddlewarePreset` opts into the canonical DenseCloud root HTTP middleware order while `RootMiddleware` remains available for product-owned layers.
+- `HTTPRuntimeConfig.HealthCheckTimeout` bounds each dependency check; the default is two seconds and timed-out or panicking checks fail closed.
+- `server.NewGRPCRuntime(...)` assembles the canonical gRPC interceptor preset, RED metrics, standard gRPC health service, listener lifecycle, and context-aware graceful stop while product services and TLS remain consumer-owned.
 - `middleware.GRPCServerPreset(...)` provides the canonical gRPC interceptor bundle while leaving auth and business interceptors to product repos.
 - `server.NewHTTPRuntime(...)` bounds default HTTP metric cardinality by collapsing API subpaths such as `/v1/models/abc` to `/v1/*`. Consumers that need route-level labels can set `HTTPRuntimeConfig.MetricsPathLabeler`.
-- `telemetry.NewGRPCMetrics(...)` can be appended to the shared `/metrics` endpoint through `HTTPMetricsConfig.Collectors` and populated by `middleware.GRPCMetricsUnary` / `middleware.GRPCMetricsStream`.
+- `GRPCRuntime.Metrics()` can be appended to the default shared `/metrics` endpoint through `HTTPRuntimeConfig.MetricsCollectors`.
 
 ## Versioning
 

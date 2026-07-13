@@ -89,15 +89,20 @@ dependencies:
     repository: oci://ghcr.io/DenseAI/charts
 ```
 
-### Reference Runtime Image
+### Local Reference Runtime Image
 
-You can pull the official reference runtime (built with the minimal example) from Docker Hub:
+The repository Dockerfile builds a local or CI-only reference image from the
+minimal example:
 
 ```bash
-docker pull denseai/densecloud:v1.0.0
+docker build -t densecloud-local-reference:dev .
+bash scripts/docker_smoke.sh
 ```
 
-This image is a ready-to-run Go server implementing the DenseCloud chassis contracts (health, metrics, graceful shutdown).
+This image exists to validate DenseCloud's shared runtime contracts in smoke
+tests. It is not a published DenseCloud release artifact and it is not the
+consumer-facing runtime image for Dense products. Downstream product
+repositories publish and qualify their own workload images.
 
 
 ## Release Artifacts
@@ -105,9 +110,20 @@ This image is a ready-to-run Go server implementing the DenseCloud chassis contr
 - Source of truth: GitHub repository
 - Go packages: semantic version tags on the repository root
 - Helm chart: OCI artifact for `charts/dense-base`
+- Dockerfile image: local/CI reference validation image only
 
 Docker images are expected to be published by consumer application
 repositories, not by DenseCloud itself.
+
+## Release Gates
+
+DenseCloud releases are gated on the same validations run in CI:
+
+- `go test ./...`
+- `go vet ./...`
+- `bash scripts/helm_matrix.sh`
+- `bash scripts/docker_smoke.sh`
+- `bash scripts/kind_smoke.sh`
 
 ## Design rules
 
@@ -121,8 +137,9 @@ repositories, not by DenseCloud itself.
   Production deployments must configure a real collector endpoint and TLS or a
   product-approved transport boundary.
 - cert-manager Secret rotation support is a chart contract and reloader
-  integration point. Actual zero-downtime certificate hot reload depends on
-  the controller and application path being qualified by the consuming product.
+  integration point. Secret issuance belongs to DenseCloud's chart boundary;
+  actual zero-downtime certificate hot reload and process reload qualification
+  remain product responsibilities.
 
 ## Repository layout
 

@@ -18,6 +18,9 @@
 ## Validation highlights
 
 - `image.repository` is required.
+- `image.repository` and `image.tag` should point at the consuming product's
+  workload image. DenseCloud's repository Dockerfile only builds a local/CI
+  reference image used by smoke validation.
 - `ingress.enabled=true` requires `service.enabled=true` and at least one `ingress.hosts[*].paths[*]`.
 - `grpc.ingress.enabled=true` requires `grpc.enabled=true`, `grpc.service.enabled=true`, and at least one `grpc.ingress.hosts[*].paths[*]`.
 - `keda.enabled=true` requires at least one explicit `keda.triggers.custom[*]`; DenseCloud does not ship placeholder autoscaling queries.
@@ -89,12 +92,15 @@ Reference `helm template` value sets and a local render harness live under
 The render matrix includes the seven baseline renderer presets plus a valid
 KEDA custom-trigger preset and an expected-failure preset for missing KEDA
 triggers. KEDA templates fail defensively even if a consumer omits the shared
-validation include.
+validation include. Runtime smoke additionally reuses the minimal preset with a
+locally built DenseCloud reference image to verify the chart's health, metrics,
+service, and API path wiring inside kind.
 
 cert-manager support creates the chart resources and annotations needed for
 Secret issuance and reloader integration. Zero-downtime certificate hot reload
-still depends on controller behavior and application/runtime qualification by
-the consuming product.
+still depends on controller behavior plus application/runtime qualification by
+the consuming product. DenseCloud does not claim product reload behavior beyond
+that chart boundary.
 
 OTel examples assume a collector reachable at the configured endpoint. Any
 insecure OTel transport setting is a local/dev default only; production values

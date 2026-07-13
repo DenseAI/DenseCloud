@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
+	"time"
 
 	densemiddleware "github.com/DenseAI/DenseCloud/go/middleware"
 	"github.com/DenseAI/DenseCloud/go/telemetry"
@@ -17,10 +19,13 @@ type HTTPRuntimeConfig struct {
 	RootMux                     *http.ServeMux
 	APIMux                      *http.ServeMux
 	APIBasePath                 string
+	MiddlewarePreset            *HTTPMiddlewarePresetConfig
 	RootMiddleware              []func(http.Handler) http.Handler
 	APIMiddleware               []func(http.Handler) http.Handler
 	Health                      *HealthRegistry
+	HealthCheckTimeout          time.Duration
 	Metrics                     *telemetry.HTTPMetrics
+	MetricsCollectors           []telemetry.PrometheusCollector
 	MetricsPath                 string
 	MetricsPathLabeler          func(*http.Request) string
 	DisableHealthRoutes         bool
@@ -40,6 +45,8 @@ type HTTPRuntime struct {
 	extensions    []RuntimeExtension
 	startupHooks  []StartupHook
 	shutdownHooks []ShutdownHook
+	shutdownOnce  sync.Once
+	shutdownErr   error
 }
 
 // NewHTTPRuntime creates a DenseCloud-owned shared HTTP runtime assembly.
@@ -68,7 +75,9 @@ func NewHTTPRuntime(cfg HTTPRuntimeConfig) (*HTTPRuntime, error) {
 
 	health := cfg.Health
 	if health == nil {
-		health = NewHealthRegistry()
+		health = NewHealthRegistry(WithHealthCheckTimeout(cfg.HealthCheckTimeout))
+	} else {
+		health.setHealthCheckTimeout(cfg.HealthCheckTimeout)
 	}
 	registerHealth := !cfg.DisableHealthRoutes
 	if registerHealth {
@@ -89,6 +98,10 @@ func NewHTTPRuntime(cfg HTTPRuntimeConfig) (*HTTPRuntime, error) {
 	if metrics == nil && registerMetrics {
 		metrics = telemetry.NewHTTPMetrics(telemetry.HTTPMetricsConfig{
 			ServiceName: cfg.ServiceName,
+			Collectors: append(
+				[]telemetry.PrometheusCollector(nil),
+				cfg.MetricsCollectors...,
+			),
 			PathLabeler: metricsPathLabelerOrDefault(
 				cfg.MetricsPathLabeler,
 				apiBasePath,
@@ -132,9 +145,14 @@ func NewHTTPRuntime(cfg HTTPRuntimeConfig) (*HTTPRuntime, error) {
 	apiHandler := densemiddleware.Chain(apiMiddleware...)(apiMux)
 	mountAPISubrouter(rootMux, apiBasePath, apiHandler)
 
+	rootMiddleware := append([]func(http.Handler) http.Handler(nil), cfg.RootMiddleware...)
+	if cfg.MiddlewarePreset != nil {
+		rootMiddleware = append(DefaultHTTPMiddleware(*cfg.MiddlewarePreset), rootMiddleware...)
+	}
+
 	rootHandler := http.Handler(rootMux)
 	rootHandler = densemiddleware.ContentTypeForPrefix(apiBasePath, "application/json")(rootHandler)
-	rootHandler = densemiddleware.Chain(cfg.RootMiddleware...)(rootHandler)
+	rootHandler = densemiddleware.Chain(rootMiddleware...)(rootHandler)
 	if metrics != nil {
 		rootHandler = metrics.Middleware()(rootHandler)
 	}
@@ -185,19 +203,26 @@ func (r *HTTPRuntime) Startup(ctx context.Context) error {
 	return nil
 }
 
-// Shutdown fail-closes readiness and runs runtime shutdown hooks.
-func (r *HTTPRuntime) Shutdown(ctx context.Context) error {
+// BeginShutdown fail-closes readiness before the transport drain starts.
+func (r *HTTPRuntime) BeginShutdown(context.Context) error {
 	r.health.MarkShuttingDown()
-	var firstErr error
-	for _, hook := range r.shutdownHooks {
-		if hook == nil {
-			continue
+	return nil
+}
+
+// Shutdown fail-closes readiness and runs runtime shutdown hooks once.
+func (r *HTTPRuntime) Shutdown(ctx context.Context) error {
+	_ = r.BeginShutdown(ctx)
+	r.shutdownOnce.Do(func() {
+		for _, hook := range r.shutdownHooks {
+			if hook == nil {
+				continue
+			}
+			if err := hook(ctx); err != nil && r.shutdownErr == nil {
+				r.shutdownErr = err
+			}
 		}
-		if err := hook(ctx); err != nil && firstErr == nil {
-			firstErr = err
-		}
-	}
-	return firstErr
+	})
+	return r.shutdownErr
 }
 
 func mountAPISubrouter(rootMux *http.ServeMux, prefix string, apiHandler http.Handler) {

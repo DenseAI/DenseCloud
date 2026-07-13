@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -228,9 +229,60 @@ func TestShutdownUsesGracefulGRPCServerWhenAvailable(t *testing.T) {
 	}
 }
 
+func TestShutdownRunsPreHooksBeforeDrainAndPostHooksAfter(t *testing.T) {
+	t.Parallel()
+
+	var order []string
+	grpcSrv := &orderedGRPCServer{onGracefulStop: func() {
+		order = append(order, "grpc-drain")
+	}}
+	runner, err := NewRunner(Options{
+		HTTPServer: &http.Server{Addr: "127.0.0.1:0"},
+		GRPCServer: grpcSrv,
+		EnableGRPC: true,
+		PreShutdownHooks: []ShutdownHook{
+			func(context.Context) error {
+				order = append(order, "pre")
+				return nil
+			},
+		},
+		ShutdownHooks: []ShutdownHook{
+			func(context.Context) error {
+				order = append(order, "post")
+				return nil
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewRunner() error = %v", err)
+	}
+
+	if err := runner.Shutdown(context.Background()); err != nil {
+		t.Fatalf("Shutdown() error = %v", err)
+	}
+	if got, want := strings.Join(order, ","), "pre,grpc-drain,post"; got != want {
+		t.Fatalf("shutdown order = %q, want %q", got, want)
+	}
+}
+
 type testGracefulGRPCServer struct {
 	graceful atomic.Bool
 	forced   atomic.Bool
+}
+
+type orderedGRPCServer struct {
+	onGracefulStop func()
+}
+
+func (*orderedGRPCServer) Start() error { return nil }
+
+func (*orderedGRPCServer) Stop() {}
+
+func (s *orderedGRPCServer) GracefulStop(context.Context) error {
+	if s.onGracefulStop != nil {
+		s.onGracefulStop()
+	}
+	return nil
 }
 
 func (s *testGracefulGRPCServer) Start() error { return nil }

@@ -3,11 +3,25 @@ name: helm-ci
 on:
   push:
     paths:
+      - "Dockerfile"
+      - ".dockerignore"
+      - "go/**"
+      - "go.mod"
+      - "go.sum"
       - "charts/dense-base/**"
+      - "scripts/helm_matrix.sh"
+      - "scripts/kind_smoke.sh"
       - ".github/workflows/helm-ci.yml"
   pull_request:
     paths:
+      - "Dockerfile"
+      - ".dockerignore"
+      - "go/**"
+      - "go.mod"
+      - "go.sum"
       - "charts/dense-base/**"
+      - "scripts/helm_matrix.sh"
+      - "scripts/kind_smoke.sh"
       - ".github/workflows/helm-ci.yml"
 
 jobs:
@@ -97,6 +111,7 @@ jobs:
       - name: Install kind
         run: |
           curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.29.0/kind-linux-amd64
+          echo "c72eda46430f065fb45c5f70e7c957cc9209402ef309294821978677c8fb3284  ./kind" | sha256sum --check
           chmod +x ./kind
           sudo mv ./kind /usr/local/bin/kind
 

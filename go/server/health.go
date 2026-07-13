@@ -3,9 +3,11 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 // HealthCheck verifies runtime liveness/readiness/startup conditions.
@@ -18,6 +20,10 @@ const (
 	HealthPhaseLive    HealthPhase = "live"
 	HealthPhaseReady   HealthPhase = "ready"
 	HealthPhaseStartup HealthPhase = "startup"
+
+	// DefaultHealthCheckTimeout keeps each dependency check below the chart's
+	// shortest default Kubernetes probe timeout.
+	DefaultHealthCheckTimeout = 2 * time.Second
 )
 
 // HealthDependency is implemented by dependencies that can self-check.
@@ -26,8 +32,30 @@ type HealthDependency interface {
 }
 
 type healthCheckEntry struct {
-	name string
-	fn   HealthCheck
+	name      string
+	fn        HealthCheck
+	execution *healthCheckExecution
+}
+
+type healthCheckExecution struct {
+	mu      sync.Mutex
+	running bool
+}
+
+func (e *healthCheckExecution) tryStart() bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.running {
+		return false
+	}
+	e.running = true
+	return true
+}
+
+func (e *healthCheckExecution) finish() {
+	e.mu.Lock()
+	e.running = false
+	e.mu.Unlock()
 }
 
 // HealthCheckResult captures the state of a named health check.
@@ -46,18 +74,38 @@ type HealthReport struct {
 
 // HealthRegistry owns DenseCloud's shared health lifecycle contract.
 type HealthRegistry struct {
-	mu        sync.RWMutex
-	liveness  []healthCheckEntry
-	readiness []healthCheckEntry
-	startup   []healthCheckEntry
+	mu           sync.RWMutex
+	liveness     []healthCheckEntry
+	readiness    []healthCheckEntry
+	startup      []healthCheckEntry
+	checkTimeout time.Duration
 
 	started      atomic.Bool
 	shuttingDown atomic.Bool
 }
 
+// HealthRegistryOption configures the shared health registry.
+type HealthRegistryOption func(*HealthRegistry)
+
+// WithHealthCheckTimeout bounds each registered dependency check. Checks should
+// still honor context cancellation so timed-out work can release resources.
+func WithHealthCheckTimeout(timeout time.Duration) HealthRegistryOption {
+	return func(registry *HealthRegistry) {
+		if timeout > 0 {
+			registry.checkTimeout = timeout
+		}
+	}
+}
+
 // NewHealthRegistry creates a registry with conservative startup defaults.
-func NewHealthRegistry() *HealthRegistry {
-	return &HealthRegistry{}
+func NewHealthRegistry(options ...HealthRegistryOption) *HealthRegistry {
+	registry := &HealthRegistry{checkTimeout: DefaultHealthCheckTimeout}
+	for _, option := range options {
+		if option != nil {
+			option(registry)
+		}
+	}
+	return registry
 }
 
 // MarkStarted flips startup/readiness into serviceable mode.
@@ -72,17 +120,17 @@ func (r *HealthRegistry) MarkShuttingDown() {
 
 // RegisterLiveness adds a liveness check.
 func (r *HealthRegistry) RegisterLiveness(name string, fn HealthCheck) {
-	r.register(&r.liveness, name, fn)
+	r.register(&r.liveness, newHealthCheckEntry(name, fn))
 }
 
 // RegisterReadiness adds a readiness check.
 func (r *HealthRegistry) RegisterReadiness(name string, fn HealthCheck) {
-	r.register(&r.readiness, name, fn)
+	r.register(&r.readiness, newHealthCheckEntry(name, fn))
 }
 
 // RegisterStartup adds a startup check.
 func (r *HealthRegistry) RegisterStartup(name string, fn HealthCheck) {
-	r.register(&r.startup, name, fn)
+	r.register(&r.startup, newHealthCheckEntry(name, fn))
 }
 
 // RegisterCheck registers the same check across one or more phases.
@@ -94,14 +142,15 @@ func (r *HealthRegistry) RegisterCheck(name string, fn HealthCheck, phases ...He
 		phases = []HealthPhase{HealthPhaseReady}
 	}
 
+	entry := newHealthCheckEntry(name, fn)
 	for _, phase := range phases {
 		switch phase {
 		case HealthPhaseLive:
-			r.RegisterLiveness(name, fn)
+			r.register(&r.liveness, entry)
 		case HealthPhaseReady:
-			r.RegisterReadiness(name, fn)
+			r.register(&r.readiness, entry)
 		case HealthPhaseStartup:
-			r.RegisterStartup(name, fn)
+			r.register(&r.startup, entry)
 		}
 	}
 }
@@ -125,14 +174,22 @@ func (r *HealthRegistry) RegisterHandlers(mux *http.ServeMux) {
 	mux.Handle("/health/startup", r.phaseHandler("startup"))
 }
 
-func (r *HealthRegistry) register(target *[]healthCheckEntry, name string, fn HealthCheck) {
-	if name == "" || fn == nil {
+func newHealthCheckEntry(name string, fn HealthCheck) healthCheckEntry {
+	return healthCheckEntry{
+		name:      name,
+		fn:        fn,
+		execution: &healthCheckExecution{},
+	}
+}
+
+func (r *HealthRegistry) register(target *[]healthCheckEntry, entry healthCheckEntry) {
+	if entry.name == "" || entry.fn == nil {
 		return
 	}
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	*target = append(*target, healthCheckEntry{name: name, fn: fn})
+	*target = append(*target, entry)
 }
 
 func (r *HealthRegistry) summaryHandler() http.Handler {
@@ -236,7 +293,7 @@ func (r *HealthRegistry) runChecks(ctx context.Context, phase string, checks []h
 	healthy := true
 	for _, check := range checks {
 		result := HealthCheckResult{Name: check.name, Status: "ok"}
-		if err := check.fn(ctx); err != nil {
+		if err := r.runCheck(ctx, check); err != nil {
 			healthy = false
 			result.Status = "unavailable"
 			result.Error = err.Error()
@@ -253,6 +310,66 @@ func (r *HealthRegistry) runChecks(ctx context.Context, phase string, checks []h
 		report.Status = "ok"
 	}
 	return report, true
+}
+
+func (r *HealthRegistry) runCheck(ctx context.Context, check healthCheckEntry) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	timeout := r.healthCheckTimeout()
+	if timeout <= 0 {
+		timeout = DefaultHealthCheckTimeout
+	}
+	if check.execution == nil {
+		return fmt.Errorf("health check execution state is unavailable")
+	}
+	if !check.execution.tryStart() {
+		return fmt.Errorf("health check is still running from previous evaluation")
+	}
+
+	checkCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	result := make(chan error, 1)
+	go func() {
+		var checkErr error
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				checkErr = fmt.Errorf("health check panicked: %v", recovered)
+			}
+			check.execution.finish()
+			result <- checkErr
+		}()
+		checkErr = check.fn(checkCtx)
+	}()
+
+	select {
+	case err := <-result:
+		return err
+	case <-checkCtx.Done():
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if checkCtx.Err() == context.DeadlineExceeded {
+			return fmt.Errorf("health check timed out after %s: %w", timeout, checkCtx.Err())
+		}
+		return checkCtx.Err()
+	}
+}
+
+func (r *HealthRegistry) setHealthCheckTimeout(timeout time.Duration) {
+	if timeout <= 0 {
+		return
+	}
+	r.mu.Lock()
+	r.checkTimeout = timeout
+	r.mu.Unlock()
+}
+
+func (r *HealthRegistry) healthCheckTimeout() time.Duration {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.checkTimeout
 }
 
 func writeHealthJSON(w http.ResponseWriter, status int, payload any) {

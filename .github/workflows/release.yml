@@ -33,17 +33,24 @@ jobs:
         with:
           version: v3.15.4
 
-      - name: Helm lint
-        run: helm lint charts/dense-base
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v4
 
-      - name: Build renderer dependencies
-        run: helm dependency build charts/dense-base/examples/renderer
-
-      - name: Render chart smoke test
+      - name: Install kind
         run: |
-          helm template dense-base-smoke charts/dense-base/examples/renderer \
-            -f charts/dense-base/examples/renderer/values/minimal.yaml \
-            > /tmp/dense-base.rendered.yaml
+          curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.29.0/kind-linux-amd64
+          echo "c72eda46430f065fb45c5f70e7c957cc9209402ef309294821978677c8fb3284  ./kind" | sha256sum --check
+          chmod +x ./kind
+          sudo mv ./kind /usr/local/bin/kind
+
+      - name: Helm render matrix
+        run: bash scripts/helm_matrix.sh
+
+      - name: Docker runtime smoke
+        run: bash scripts/docker_smoke.sh
+
+      - name: Kind runtime smoke
+        run: bash scripts/kind_smoke.sh
 
   github-release:
     runs-on: ubuntu-latest

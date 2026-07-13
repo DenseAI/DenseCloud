@@ -4,16 +4,20 @@ on:
   push:
     paths:
       - "Dockerfile"
+      - ".dockerignore"
       - "go/**"
       - "go.mod"
       - "go.sum"
+      - "scripts/docker_smoke.sh"
       - ".github/workflows/docker-ci.yml"
   pull_request:
     paths:
       - "Dockerfile"
+      - ".dockerignore"
       - "go/**"
       - "go.mod"
       - "go.sum"
+      - "scripts/docker_smoke.sh"
       - ".github/workflows/docker-ci.yml"
 
 jobs:
@@ -23,5 +27,5 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Docker build
-        run: docker build .
+      - name: Docker runtime smoke
+        run: bash scripts/docker_smoke.sh

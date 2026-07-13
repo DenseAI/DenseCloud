@@ -15,10 +15,10 @@ func main() {
 
 	runtime, err := server.NewHTTPRuntime(server.HTTPRuntimeConfig{
 		ServiceName: "dense-example",
-		RootMiddleware: server.DefaultHTTPMiddleware(server.HTTPMiddlewarePresetConfig{
+		MiddlewarePreset: &server.HTTPMiddlewarePresetConfig{
 			TracerName:     "dense-example",
 			RequestTimeout: 15 * time.Second,
-		}),
+		},
 	})
 	if err != nil {
 		slog.Error("failed to create runtime", slog.String("error", err.Error()))
@@ -31,8 +31,9 @@ func main() {
 
 	httpServer := &http.Server{Addr: ":8080", Handler: runtime.Handler()}
 	runner, err := server.NewRunner(server.Options{
-		HTTPServer:   httpServer,
-		StartupHooks: []server.StartupHook{runtime.Startup},
+		HTTPServer:       httpServer,
+		StartupHooks:     []server.StartupHook{runtime.Startup},
+		PreShutdownHooks: []server.ShutdownHook{runtime.BeginShutdown},
 		ShutdownHooks: []server.ShutdownHook{
 			runtime.Shutdown,
 		},
