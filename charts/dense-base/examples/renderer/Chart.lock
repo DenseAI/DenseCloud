@@ -1,6 +1,6 @@
 dependencies:
 - name: dense-base
   repository: file://../../
-  version: 1.0.0
-digest: sha256:a851538baf46212032716e9468e36b4e544c4d4f1d13c8af515e6d64d881bcbc
-generated: "2026-03-27T23:12:54.651506917+09:00"
+  version: 1.1.0
+digest: sha256:3c2e05aaa7242331c1e9858de158b0984d2265785b1a08ae0dfcc768e9e95e33
+generated: "2026-08-09T16:13:45.604163799+09:00"

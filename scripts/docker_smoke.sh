@@ -69,6 +69,12 @@ require_command curl
 cd "${REPO_ROOT}"
 
 docker build -t "${IMAGE_REF}" -f "${REPO_ROOT}/Dockerfile" "${REPO_ROOT}"
+docker run --rm --entrypoint /bin/sh "${IMAGE_REF}" -c '
+  test -s /usr/share/licenses/densecloud/LICENSE &&
+  test -s /usr/share/licenses/densecloud/NOTICE &&
+  test -s /usr/share/licenses/densecloud/THIRD_PARTY_NOTICES.md &&
+  find /usr/share/licenses/densecloud/third-party -type f -size +0 | grep -q .
+'
 cleanup
 docker run -d \
   --name "${CONTAINER_NAME}" \

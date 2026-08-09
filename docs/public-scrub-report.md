@@ -15,7 +15,7 @@ It is not a full history rewrite or credential audit.
   DenseDiffusion in public documentation and
   package paths. These appear intentional, but they should be reviewed for
   branding and ownership consistency before the repository is made public.
-- Helm registry references were normalized to `ghcr.io/DenseAI/charts`
+- Helm registry references were normalized to `ghcr.io/denseai/charts`
   so the docs match the planned public publishing workflow.
 
 ## Findings

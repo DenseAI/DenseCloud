@@ -47,7 +47,7 @@ DenseEnterprise, model, CGO, or inference-specific business logic.
 ### Go runtime
 
 ```bash
-go get github.com/DenseAI/DenseCloud@v1.0.0
+go get github.com/DenseAI/DenseCloud@v1.1.0
 ```
 
 Example imports:
@@ -85,8 +85,8 @@ In a consumer chart:
 ```yaml
 dependencies:
   - name: dense-base
-    version: 1.0.0
-    repository: oci://ghcr.io/DenseAI/charts
+    version: 1.1.0
+    repository: oci://ghcr.io/denseai/charts
 ```
 
 ### Local Reference Runtime Image
@@ -121,6 +121,7 @@ DenseCloud releases are gated on the same validations run in CI:
 
 - `go test ./...`
 - `go vet ./...`
+- `go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...`
 - `bash scripts/helm_matrix.sh`
 - `bash scripts/docker_smoke.sh`
 - `bash scripts/kind_smoke.sh`
@@ -161,6 +162,7 @@ policies remain in product-specific repositories.
 ## Open Source
 
 - License: Apache 2.0 ([LICENSE](LICENSE))
+- Third-party notices: [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)
 - Security reporting: see `SECURITY.md`
 - Contribution process: see `CONTRIBUTING.md`
 - Release process: see `docs/release.md`

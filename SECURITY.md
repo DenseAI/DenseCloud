@@ -2,8 +2,9 @@
 
 ## Supported Releases
 
-DenseCloud is pre-1.0 software. Security fixes are applied on a best-effort
-basis to the latest tagged release and the `main` branch.
+Security fixes are applied to the latest tagged release and the `main` branch.
+Older releases receive fixes only when explicitly identified in a security
+advisory.
 
 ## Reporting a Vulnerability
 

@@ -1,9 +1,14 @@
-FROM golang:1.24-alpine AS builder
+FROM golang:1.25-alpine AS builder
 
 WORKDIR /app
 
 COPY go.mod go.sum ./
 RUN go mod download
+RUN module_cache="$(go env GOMODCACHE)" && \
+    mkdir -p /third-party-licenses && \
+    find "${module_cache}" -type f \
+      \( -name 'LICENSE*' -o -name 'NOTICE*' -o -name 'COPYING*' \) \
+      -exec sh -c 'cache_root="$1"; shift; for source_path do relative_path="${source_path#"${cache_root}"/}"; destination="/third-party-licenses/$(dirname "${relative_path}")"; mkdir -p "${destination}"; cp "${source_path}" "${destination}/"; done' sh "${module_cache}" {} +
 
 COPY . .
 
@@ -17,6 +22,10 @@ RUN addgroup -S densecloud && adduser -S -G densecloud -H -h /nonexistent densec
 WORKDIR /app
 
 COPY --from=builder /densecloud-runtime /app/densecloud-runtime
+COPY --from=builder /app/LICENSE /usr/share/licenses/densecloud/LICENSE
+COPY --from=builder /app/NOTICE /usr/share/licenses/densecloud/NOTICE
+COPY --from=builder /app/THIRD_PARTY_NOTICES.md /usr/share/licenses/densecloud/THIRD_PARTY_NOTICES.md
+COPY --from=builder /third-party-licenses /usr/share/licenses/densecloud/third-party
 USER densecloud:densecloud
 
 EXPOSE 8080

@@ -1,6 +1,6 @@
 # DenseCloud OSS Release Checklist
 
-Use this checklist before changing the repository visibility to public.
+Use this checklist before each public release.
 
 ## 1. Repository Hygiene
 
@@ -19,6 +19,8 @@ Use this checklist before changing the repository visibility to public.
 - `CONTRIBUTING.md` present with contribution and review expectations.
 - Verify third-party dependency licenses are compatible with Apache 2.0
   distribution.
+- Verify the packaged Helm chart and reference image contain `LICENSE` and
+  `NOTICE`.
 
 ## 3. Public Documentation
 
@@ -29,12 +31,15 @@ Use this checklist before changing the repository visibility to public.
 
 ## 4. Release Mechanics
 
-- Tag the repository root with the initial public version.
+- Tag the repository root with the release version.
 - Publish a GitHub Release with:
   - summary of Go runtime changes
   - summary of Helm chart changes
   - upgrade notes for downstream consumers
 - Package and publish the `dense-base` chart to the OCI registry.
+- Confirm the release tag matches the Helm chart version and has versioned
+  release notes under `docs/releases/`.
+- Run `govulncheck` and resolve every reachable advisory before tagging.
 - Verify `go get` and Helm dependency resolution succeed from a clean public
   environment.
 

@@ -1,0 +1,3 @@
+examples/renderer/charts/
+*.tgz
+*.tar.gz

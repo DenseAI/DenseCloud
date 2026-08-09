@@ -28,10 +28,21 @@ jobs:
       - name: Go vet
         run: go vet ./...
 
+      - name: Go vulnerability check
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
+
       - name: Setup Helm
         uses: azure/setup-helm@v4
         with:
           version: v3.15.4
+
+      - name: Verify tag, chart, and release notes
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          release_version="${GITHUB_REF_NAME#v}"
+          chart_version="$(helm show chart charts/dense-base | awk '/^version:/ { print $2 }')"
+          test "${release_version}" = "${chart_version}"
+          test -f "docs/releases/${GITHUB_REF_NAME}.md"
 
       - name: Setup kubectl
         uses: azure/setup-kubectl@v4
@@ -54,7 +65,7 @@ jobs:
 
   github-release:
     runs-on: ubuntu-latest
-    needs: verify
+    needs: [verify, publish-chart]
     if: startsWith(github.ref, 'refs/tags/v')
     steps:
       - name: Checkout
@@ -66,11 +77,12 @@ jobs:
           version: v3.15.4
 
       - name: Build chart package
-        run: helm package charts/dense-base --destination /tmp/charts
+        run: bash scripts/package_helm.sh /tmp/charts
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          body_path: docs/releases/${{ github.ref_name }}.md
           generate_release_notes: true
           files: /tmp/charts/*.tgz
 
@@ -91,7 +103,12 @@ jobs:
         run: echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u "${{ github.actor }}" --password-stdin
 
       - name: Package chart
-        run: helm package charts/dense-base --destination /tmp/charts
+        run: bash scripts/package_helm.sh /tmp/charts
+
+      - name: Configure OCI namespace
+        env:
+          REPOSITORY_OWNER: ${{ github.repository_owner }}
+        run: echo "OCI_NAMESPACE=${REPOSITORY_OWNER,,}" >> "$GITHUB_ENV"
 
       - name: Push chart to OCI registry
-        run: helm push /tmp/charts/dense-base-*.tgz oci://ghcr.io/${{ github.repository_owner }}/charts
+        run: helm push /tmp/charts/dense-base-*.tgz "oci://ghcr.io/${OCI_NAMESPACE}/charts"

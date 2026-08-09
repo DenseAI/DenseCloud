@@ -12,6 +12,7 @@ is not a published DenseCloud release artifact.
 3. Run the release gates locally or on the release branch when possible:
    - `go test ./...`
    - `go vet ./...`
+   - `go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...`
    - `bash scripts/helm_matrix.sh`
    - `bash scripts/docker_smoke.sh`
    - `bash scripts/kind_smoke.sh`
@@ -21,7 +22,7 @@ is not a published DenseCloud release artifact.
 
 ## Go module release
 
-1. Tag repository root with semantic version (`v0.1.0`, `v0.2.0`, ...).
+1. Tag the repository root with the next semantic version after `v1.0.0`.
 2. Publish repository and allow product repos to update:
    - module: `github.com/DenseAI/DenseCloud@vX.Y.Z`
    - package imports remain functional paths (for example `github.com/DenseAI/DenseCloud/go/server`)
@@ -31,13 +32,13 @@ is not a published DenseCloud release artifact.
 1. Package chart:
 
 ```bash
-helm package charts/dense-base
+bash scripts/package_helm.sh /tmp/charts
 ```
 
 2. Push to OCI chart registry (recommended):
 
 ```bash
-helm push dense-base-0.2.0.tgz oci://ghcr.io/DenseAI/charts
+helm push /tmp/charts/dense-base-1.1.0.tgz oci://ghcr.io/denseai/charts
 ```
 
 3. Product chart dependency example:
@@ -45,14 +46,16 @@ helm push dense-base-0.2.0.tgz oci://ghcr.io/DenseAI/charts
 ```yaml
 dependencies:
   - name: dense-base
-    version: 0.2.0
-    repository: oci://ghcr.io/DenseAI/charts
+    version: 1.1.0
+    repository: oci://ghcr.io/denseai/charts
 ```
 
 ## Notes
 
 - Root git tags version the Go module.
 - Chart versions are managed in `charts/dense-base/Chart.yaml`.
+- `scripts/package_helm.sh` includes the repository `LICENSE` and `NOTICE` in
+  every chart archive.
 - The Dockerfile reference image validates DenseCloud's shared health, metrics,
   and `/v1/hello` contracts in local and CI smoke runs only.
 - Docker image publication belongs in downstream workload repositories that

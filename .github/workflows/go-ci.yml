@@ -31,3 +31,6 @@ jobs:
 
       - name: Go vet
         run: go vet ./...
+
+      - name: Go vulnerability check
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
