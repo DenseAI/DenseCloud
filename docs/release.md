@@ -23,6 +23,10 @@ is not a published DenseCloud release artifact.
    GHCR.
 7. Publish a GitHub Release with upgrade notes and the verified chart archive.
 
+If a tag-triggered run is interrupted by registry or mirror propagation, rerun
+the workflow manually with the existing `vX.Y.Z` tag. Manual retries checkout
+that immutable tag rather than the current branch.
+
 ## Go module release
 
 1. Tag the repository root with the next semantic version after `v1.0.0`.
