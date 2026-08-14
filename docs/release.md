@@ -11,14 +11,17 @@ is not a published DenseCloud release artifact.
 2. Ensure CI is green on the commit to be released.
 3. Run the release gates locally or on the release branch when possible:
    - `go test ./...`
+   - `go test -race ./go/server`
    - `go vet ./...`
    - `go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...`
    - `bash scripts/helm_matrix.sh`
    - `bash scripts/docker_smoke.sh`
    - `bash scripts/kind_smoke.sh`
 4. Tag the repository root with a semantic version.
-5. Publish a GitHub Release with upgrade notes.
-6. Publish the Helm chart artifact.
+5. Verify the tagged Go module resolves with `GOPROXY=direct`.
+6. Publish the Helm chart artifact and verify it is anonymously pullable from
+   GHCR.
+7. Publish a GitHub Release with upgrade notes and the verified chart archive.
 
 ## Go module release
 
@@ -63,3 +66,6 @@ dependencies:
 - cert-manager rotation support stops at chart resources and reloader wiring.
   Secret reload behavior and zero-downtime certificate qualification stay with
   the consuming product runtime.
+- DenseCloud uses independent semantic versioning. Product repositories record
+  the exact DenseCloud runtime and chart version they qualify; matching product
+  and chassis version numbers is not a compatibility guarantee.

@@ -1,15 +1,15 @@
 # DenseCloud CTO Architecture Report
-## 2026-07-14 implementation baseline
+## 2026-08-15 implementation baseline
 
 | 항목 | 현재 값 |
 | --- | --- |
-| Architecture baseline | `01d46f6` (`Close DenseCloud's MVP operability gaps before release`) |
+| Architecture baseline | `bf4eb77` plus the local `v1.1.0` release-candidate hardening |
 | Go module | `github.com/DenseAI/DenseCloud` |
-| Go version | Go `1.24.0`, toolchain `1.24.1` |
-| Helm library chart | `dense-base` `1.0.0` |
+| Go version | Go `1.25.13`, toolchain `1.25.13` |
+| Helm library chart | `dense-base` `1.1.0` |
 | Public release baseline | `v1.0.0`, commit `f1a63ff` |
 | Repository maturity | MVP-ready |
-| Public distribution stage | 새 semantic version 발행 준비 |
+| Public distribution stage | `v1.1.0` tag와 OCI chart 발행 대기 |
 | Field qualification stage | 실제 Kubernetes controller와 product workload 검증 준비 |
 
 이 문서는 DenseCloud의 코드 구조, 실행 흐름, 상태 전이, 배포 객체,
@@ -938,16 +938,18 @@ Release workflow가 설치하는 kind `v0.29.0` binary는 SHA-256 checksum으로
 
 ### 12.4 Current publication state
 
-Public `v1.0.0`은 commit `f1a63ff`를 가리킨다. Current runtime architecture
-baseline은 `01d46f6`이다. 최신 runtime을 배포하는 release sequence는 다음과
-같다.
+Public `v1.0.0`은 commit `f1a63ff`를 가리킨다. Current `v1.1.0` release
+candidate는 `bf4eb77` 이후의 보안 toolchain과 public-consumer verification
+hardening을 포함한다. 최신 runtime을 배포하는 release sequence는 다음과 같다.
 
 1. local commits를 `main`에 push한다.
 2. CI의 Go, Docker, Helm, kind 결과를 확인한다.
 3. 새 semantic version을 결정한다.
 4. 새 tag를 생성한다.
-5. release workflow가 GitHub Release와 OCI Helm chart를 발행한다.
-6. Consumer repository가 Go module과 chart dependency를 갱신한다.
+5. release workflow가 tagged Go module resolution을 확인한다.
+6. OCI Helm chart를 발행하고 anonymous pull을 확인한다.
+7. 검증이 끝난 뒤 GitHub Release를 발행한다.
+8. Consumer repository가 Go module과 chart dependency를 갱신한다.
 
 ---
 
@@ -974,21 +976,28 @@ baseline은 `01d46f6`이다. 최신 runtime을 배포하는 release sequence는 
 
 ## 14. Validation Evidence
 
-Architecture baseline `01d46f6`에서 다음 검증이 통과했다.
+2026-08-15 `v1.1.0` release candidate에서 다음 검증이 통과했다.
 
 - `go test ./...`
 - `go vet ./...`
+- `govulncheck v1.6.0 ./...` with Go `1.25.13`
 - `go test -race ./go/server`
 - `bash scripts/helm_matrix.sh`
 - `bash scripts/docker_smoke.sh`
 - `bash scripts/kind_smoke.sh`
 - `bash -n scripts/docker_smoke.sh scripts/kind_smoke.sh scripts/helm_matrix.sh`
-- `git diff --cached --check`
+- `actionlint .github/workflows/*.yml`
+- Helm archive legal-file inspection
+- clean-tree Go consumer smoke
+- DenseCore `v0.1.0` chart render against local `dense-base` `1.1.0`
+- tracked-tree and reachable-history credential-signature scan
+- `git diff --check`
 
-이번 문서 revision에서도 `go test ./...`, `go vet ./...`,
-`bash scripts/helm_matrix.sh`를 다시 실행해 현재 worktree의 runtime과 chart
-contract를 확인했다. Docker와 kind runtime 결과는 architecture baseline
-`01d46f6`의 실행 증거를 사용한다.
+Docker smoke는 Go `1.25.13` builder image에서 reference runtime의 legal bundle,
+health, metrics, API response를 확인했다. Kind smoke는 fresh cluster에서 chart
+variant apply와 reference Deployment rollout을 수행했으며, 완료 후 임시 cluster가
+남지 않았음을 확인했다. Public tag resolution과 anonymous OCI pull은 tag와 package
+publication 이후 release workflow가 실행하는 외부 게이트다.
 
 ### 14.1 Test coverage map
 
@@ -1033,7 +1042,7 @@ Repository validation 이후 운영 환경에서 다음 workstream을 실행한�
 | Telemetry | MVP-ready | HTTP/gRPC metric and OTel tests |
 | Helm chart | MVP-ready | lint, matrix, validation, kind apply/runtime |
 | Release automation | MVP-ready | verify and publish workflow defined |
-| Public latest version | Pending | new semantic tag sequence |
+| Public latest version | Pending | `v1.1.0` tag와 public artifact verification |
 | Controller qualification | Pending | field workstreams listed above |
 | Dense Series adoption | Per product | consumer migration gate |
 

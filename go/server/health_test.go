@@ -44,7 +44,7 @@ func TestHealthRegistryLifecycle(t *testing.T) {
 }
 
 func TestNewHTTPRuntime_WiresHealthMetricsAndExtensions(t *testing.T) {
-	t.Parallel()
+	replaceRuntimeExtensionsForTest(t)
 
 	started := false
 	stopped := false

@@ -42,6 +42,17 @@ DenseEnterprise, model, CGO, or inference-specific business logic.
 - Package imports: `github.com/DenseAI/DenseCloud/go/...`
 - Helm chart: `dense-base` published as an OCI chart
 
+DenseCloud versions the shared chassis API independently from product release
+numbers. Product compatibility is qualified explicitly instead of inferred from
+matching version numbers. The first public DenseCore MVP target is:
+
+| Product | DenseCloud runtime/chart | Qualification |
+| --- | --- | --- |
+| DenseCore `v0.1.0` | DenseCloud `v1.1.0` | local chart integration passed; public artifact pending |
+
+The row becomes qualified only after the DenseCloud public artifacts resolve
+and the DenseCore consumer chart and serving smoke gates pass against them.
+
 ## Installation
 
 ### Go runtime
@@ -120,6 +131,7 @@ repositories, not by DenseCloud itself.
 DenseCloud releases are gated on the same validations run in CI:
 
 - `go test ./...`
+- `go test -race ./go/server`
 - `go vet ./...`
 - `go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...`
 - `bash scripts/helm_matrix.sh`
