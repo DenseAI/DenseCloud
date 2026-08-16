@@ -9,7 +9,9 @@ is not a published DenseCloud release artifact.
 
 1. Complete the OSS checklist in `docs/oss-release-checklist.md`.
 2. Ensure CI is green on the commit to be released.
-3. Run the release gates locally or on the release branch when possible:
+3. Use Go `1.26.6` or newer and confirm the selected toolchain with
+   `go version`.
+4. Run the release gates locally or on the release branch when possible:
    - `go test ./...`
    - `go test -race ./...`
    - `go vet ./...`
@@ -17,11 +19,11 @@ is not a published DenseCloud release artifact.
    - `bash scripts/helm_matrix.sh`
    - `bash scripts/docker_smoke.sh`
    - `bash scripts/kind_smoke.sh`
-4. Tag the repository root with a semantic version.
-5. Verify the tagged Go module resolves with `GOPROXY=direct`.
-6. Publish the Helm chart artifact and verify it is anonymously pullable from
+5. Tag the repository root with a semantic version.
+6. Verify the tagged Go module resolves with `GOPROXY=direct`.
+7. Publish the Helm chart artifact and verify it is anonymously pullable from
    GHCR.
-7. Publish a GitHub Release with upgrade notes and the verified chart archive.
+8. Publish a GitHub Release with upgrade notes and the verified chart archive.
 
 If a tag-triggered run is interrupted by registry or mirror propagation, rerun
 the workflow manually with the existing `vX.Y.Z` tag. Manual retries checkout

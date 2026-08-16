@@ -57,6 +57,11 @@ and the DenseCore consumer chart and serving smoke gates pass against them.
 
 ### Go runtime
 
+Building current `main` requires Go `1.26.6` or a later patched release. The
+published `v1.1.0` module was built with Go `1.25.13`; Go `1.26.0` through
+`1.26.5` are excluded from current validation because of standard-library
+advisories fixed in `1.26.6`.
+
 ```bash
 go get github.com/DenseAI/DenseCloud@v1.1.0
 ```

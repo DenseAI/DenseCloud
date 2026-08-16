@@ -1,6 +1,6 @@
 module github.com/DenseAI/DenseCloud
 
-go 1.25.13
+go 1.26.6
 
 require (
 	github.com/redis/go-redis/v9 v9.7.3

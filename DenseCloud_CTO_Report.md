@@ -1,16 +1,18 @@
 # DenseCloud CTO Architecture Report
-## 2026-08-15 implementation baseline
+## 2026-08-16 implementation and publication baseline
 
 | 항목 | 현재 값 |
 | --- | --- |
-| Architecture baseline | `bf4eb77` plus the local `v1.1.0` release-candidate hardening |
+| Architecture baseline | current `main`; public runtime and chart baseline `v1.1.0` (`99b11fd`) |
 | Go module | `github.com/DenseAI/DenseCloud` |
-| Go version | Go `1.25.13`, toolchain `1.25.13` |
+| Main Go version | Go `1.26.6`, toolchain `1.26.6` |
+| Public `v1.1.0` Go version | Go `1.25.13` |
 | Helm library chart | `dense-base` `1.1.0` |
-| Public release baseline | `v1.0.0`, commit `f1a63ff` |
+| Public release baseline | `v1.1.0`, annotated tag `99b11fd`, GitHub Release published 2026-08-14 |
 | Repository maturity | MVP-ready |
-| Public distribution stage | `v1.1.0` tag와 OCI chart 발행 대기 |
-| Field qualification stage | 실제 Kubernetes controller와 product workload 검증 준비 |
+| Public distribution stage | `v1.1.0` Go module, GitHub Release, `dense-base` OCI chart 공개 검증 완료 |
+| Post-release main stage | peer-based limiter, bounded partitions, coalesced health checks, Go `1.26.6`, full race/packaging gate가 다음 release 대상 |
+| Field qualification stage | 실제 Kubernetes controller와 product workload 검증 진행 필요 |
 
 이 문서는 DenseCloud의 코드 구조, 실행 흐름, 상태 전이, 배포 객체,
 장애 처리, 검증 범위를 하나의 architecture reference로 정리한다.
@@ -23,7 +25,7 @@ DenseCloud는 Dense Series 제품 서버의 공통 cloud-native serving chassis�
 각 제품은 DenseCloud를 통해 동일한 HTTP/gRPC lifecycle, health contract,
 observability, graceful shutdown, Kubernetes packaging, release gate를 사용한다.
 
-현재 구현은 다음 여섯 가지 공통 계약을 제공한다.
+현재 구현은 다음 일곱 가지 공통 계약을 제공한다.
 
 1. **HTTP runtime assembly**
    - API router, health endpoint, metrics endpoint, middleware, extension,
@@ -41,8 +43,12 @@ observability, graceful shutdown, Kubernetes packaging, release gate를 사용�
    - Helm library chart가 Deployment, Service, probe, ingress, TLS,
      ServiceMonitor, KEDA, PDB, NetworkPolicy, model volume을 렌더링한다.
 6. **Executable release gate**
-   - Go test/vet, Helm render matrix, Docker runtime smoke, kind runtime smoke가
-     release workflow의 필수 검증 단계로 연결된다.
+   - Go test/race/vet/vulnerability scan, workflow lint, Helm render/package
+     validation, Docker runtime smoke, kind runtime smoke가 release workflow의
+     필수 검증 단계로 연결된다.
+7. **Bounded shared-runtime safety**
+   - rate-limit identity는 검증된 trust boundary를 요구하고, in-memory
+     partition 수와 health-check 동시 실행 수를 제한한다.
 
 ### 1.1 CTO decision
 
@@ -53,7 +59,8 @@ observability, graceful shutdown, Kubernetes packaging, release gate를 사용�
 | Health and observability | Ready | probe, metrics, logging, tracing contract가 연결돼 있다. |
 | Kubernetes packaging | Ready | 주요 운영 객체와 fail-fast validation이 구현돼 있다. |
 | Repository-level MVP | Complete | 코드, 테스트, Docker, kind 검증이 통과했다. |
-| Public release | Pending | 최신 runtime commit을 포함한 새 tag 발행 단계다. |
+| Public release | Complete | `v1.1.0` GitHub Release와 `dense-base-1.1.0.tgz`가 공개되어 있다. |
+| Post-release hardening | Ready on main | trust-boundary, concurrency, Go `1.26.6`, packaging 보강이 검증됐다. |
 | Field qualification | Pending | 실제 controller, CNI, product workload 검증 단계다. |
 | Product adoption | Per product | 각 제품 저장소가 chassis entrypoint를 채택하는 단계다. |
 
@@ -76,6 +83,61 @@ DenseCore는 inference engine, scheduler, KV cache, model-serving metric을
 소유한다. DenseEnterprise는 license, quota, attestation, audit enforcement를
 소유한다. DenseCloud는 이 제품들이 실행되는 공통 service chassis를
 소유한다.
+
+### 1.3 Product intent and target niche
+
+DenseCloud의 기획 의도는 **서로 다른 AI inference 제품이 동일한 운영 계약을
+공유하게 만드는 product-line infrastructure**를 제공하는 것이다. Model runtime의
+성능 최적화는 각 product가 계속 소유하고, service lifecycle과 Kubernetes 운영
+품질은 DenseCloud의 versioned contract로 중앙화한다.
+
+목표 niche는 다음 조건을 동시에 가진 조직이다.
+
+| Target segment | 반복되는 문제 | DenseCloud가 제공하는 해법 |
+| --- | --- | --- |
+| 여러 inference service를 운영하는 AI platform team | 제품마다 probe, metrics, shutdown, chart 구현과 장애 의미가 달라짐 | 공통 Go runtime과 Helm library chart로 lifecycle을 통일 |
+| Kubernetes 기반 self-hosted AI를 운영하는 SRE/platform team | 모델 서버의 긴 startup/drain, custom autoscaling, model volume을 generic service template에 매번 접합 | startup/readiness 분리, ordered drain, explicit KEDA trigger, model volume contract 제공 |
+| CPU/accelerator/도메인 runtime을 함께 관리하는 product-line 조직 | 엔진별 business logic을 유지하면서 운영 기반은 재사용해야 함 | domain-neutral HTTP/gRPC chassis와 consumer-owned extension boundary 제공 |
+| OSS runtime을 제품 image에 내장하는 팀 | library 형태의 안정된 lifecycle API와 배포 skeleton이 필요 | semantic-versioned Go module과 OCI Helm library chart 제공 |
+
+핵심 사용자는 세 역할이다.
+
+- **Runtime engineer**는 domain route, protobuf service, model worker를
+  `HTTPRuntime`, `GRPCRuntime`, `HealthRegistry`에 연결한다.
+- **SRE/platform engineer**는 `dense-base` values로 probe, Service,
+  ingress, TLS, KEDA, PDB, ServiceMonitor, NetworkPolicy를 표준화한다.
+- **Product owner/CTO**는 product별 서버 기반 코드의 중복을 줄이고,
+  공통 보안 수정과 운영 정책을 하나의 chassis release로 전파한다.
+
+DenseCloud의 배포 단위는 consumer product에 포함되는 두 artifact다. Go module은
+process lifecycle을 제공하고, Helm library chart는 Kubernetes object contract를
+제공한다. Consumer repository는 실제 workload image, domain API, authorization,
+resource sizing, autoscaling query와 production qualification을 소유한다.
+
+### 1.4 Product thesis and success criteria
+
+제품 가설은 다음 인과관계로 구성된다.
+
+```text
+shared runtime + shared chart
+    -> product별 bootstrap과 운영 코드 감소
+    -> probe/metric/shutdown 의미의 일관성 증가
+    -> 공통 결함을 한 release에서 수정
+    -> 새 Dense product의 production qualification 시간 단축
+```
+
+현재 repository evidence는 runtime, chart, release artifact의 구현 가능성과
+반복 검증 가능성을 증명한다. 실제 고객 환경의 운영 효과와 시장 수요는 field
+evidence로 축적할 단계다. 다음 지표가 기획 의도의 달성 여부를 판단한다.
+
+| Success signal | 측정 방법 |
+| --- | --- |
+| Product adoption | Dense product 중 shared runtime과 chart를 사용하는 비율 |
+| Bootstrap reduction | 새 service의 health/metrics/shutdown/Kubernetes 기반 구현 시간 |
+| Contract consistency | product 간 probe status, metric label, shutdown order drift 건수 |
+| Change propagation | 공통 보안/운영 수정 후 consumer upgrade 완료 시간 |
+| Field reliability | startup failure, rollout, drain, autoscaling 관련 incident와 SLO |
+| Release consumability | public module/chart를 clean environment에서 재현한 성공률 |
 
 ---
 
@@ -476,16 +538,22 @@ stateDiagram-v2
 기본 check timeout은 2초다. 실행 흐름은 다음과 같다.
 
 1. per-check execution lock을 획득한다.
-2. parent request context에 2초 deadline을 결합한다.
-3. check를 별도 goroutine에서 실행한다.
-4. 정상 결과, panic 결과, timeout 결과를 health report로 변환한다.
-5. check goroutine 종료 시 execution lock을 해제한다.
+2. 실행 중인 call이 있으면 새 goroutine을 만들지 않고 그 call에 join한다.
+3. 새 call은 독립된 background context와 2초 deadline으로 시작한다.
+4. check를 별도 goroutine에서 한 번 실행한다.
+5. 각 probe caller는 shared result, 자신의 request cancellation, shared timeout 중
+   먼저 발생한 결과를 받는다.
+6. 정상 결과, panic 결과, timeout 결과를 health report로 변환한다.
+7. check goroutine이 실제로 종료되면 execution slot을 비운다.
 
-이 구조는 probe 응답 시간을 제한하고 동일 dependency check의 goroutine
-누적을 방지한다. 이전 evaluation의 check가 실행 중인 경우 다음 probe는
-`health check is still running from previous evaluation` 결과로 fail-close한다.
-Check callback은 context cancellation을 처리해 외부 I/O와 resource를
-신속하게 반환한다.
+이 구조는 live/ready/startup endpoint가 같은 dependency를 동시에 평가해도
+실제 dependency call을 하나로 coalesce한다. Request cancellation은 해당 probe
+응답만 중단하고 다른 probe가 공유하는 check를 취소하지 않는다. Check가 timeout
+context를 무시해도 후속 probe는 같은 in-flight call을 공유하므로 goroutine 수가
+probe 호출량에 비례해 증가하지 않는다. Shared timeout은 `503`으로 fail-close하며,
+callback이 실제로 반환된 뒤 다음 probe가 새 execution을 시작한다. Check callback은
+context cancellation을 처리해 외부 I/O와 resource를 신속하게 반환하는 계약을
+유지한다.
 
 ---
 
@@ -605,12 +673,21 @@ DenseCloud는 세 가지 rate limit storage mode를 제공한다.
 | Mode | Scope | Behavior |
 | --- | --- | --- |
 | In-memory token bucket | process-global | requests per second와 burst 적용 |
-| Partitioned in-memory | key별 | client/tenant key마다 bucket 생성, TTL cleanup |
+| Partitioned in-memory | key별 | bounded bucket map, TTL cleanup, overflow bucket |
 | Redis token bucket | multi-pod | Lua script로 key별 token update를 atomic 실행 |
 
-HTTP 기본 key는 `X-Forwarded-For` 첫 IP, `RemoteAddr` host, `global` 순서로
-선택된다. Product key extractor는 API key, tenant ID, user ID 기준으로
-교체할 수 있다.
+HTTP와 gRPC의 기본 key는 direct transport peer의 host address다. HTTP는
+`RemoteAddr`, gRPC는 `peer.FromContext`를 사용하며 peer를 얻지 못하면 각각
+`global`, `grpc-global` bucket을 사용한다. `X-Forwarded-For`, API key, tenant
+metadata는 기본 identity 대상에서 제외된다. Trusted proxy 또는 인증 layer가
+identity를 검증한 뒤 product key extractor를 주입하면 client IP, tenant ID,
+user ID 기준으로 교체할 수 있다.
+
+Partitioned in-memory limiter의 기본 bound는 `4,096`개 partition, entry TTL은
+5분, cleanup interval은 1분이다. Partition budget이 가득 찬 뒤 나타나는 새 key는
+하나의 shared overflow bucket을 사용한다. 이 정책은 attacker-controlled key
+rotation이 memory를 무한히 늘리거나 active bucket eviction으로 limit를 초기화하는
+경로를 차단한다.
 
 Redis runtime call은 100ms timeout을 사용한다. 연속 failure threshold 기본값은
 3회이며 reset timeout 기본값은 30초다. Redis bootstrap과 runtime failure는
@@ -900,10 +977,10 @@ repository가 발행한다. DenseCloud Dockerfile은 minimal HTTP runtime을
 
 | Workflow | Trigger surface | Gates |
 | --- | --- | --- |
-| `go-ci` | Go source/module change | `go test ./...`, `go vet ./...` |
+| `go-ci` | Go source/module/workflow change | test, full race, vet, vuln scan, actionlint |
 | `docker-ci` | Dockerfile, Go runtime, smoke script | Docker build와 runtime endpoint smoke |
-| `helm-ci` | chart, Go runtime, Dockerfile, kind script | lint, package, render matrix, validation, kind runtime smoke |
-| `release` | `v*` tag 또는 manual dispatch | Go, Helm, Docker, kind verify; `v*` tag에서 release/chart publish |
+| `helm-ci` | chart, Go runtime, Dockerfile, kind script | lint, legal/package validation, clean render matrix, validation, kind runtime smoke |
+| `release` | `v*` tag 또는 manual dispatch | immutable tag, version, Go/race/vet/vuln, workflow, Helm, Docker, kind, OCI 검증 |
 
 Release workflow가 설치하는 kind `v0.29.0` binary는 SHA-256 checksum으로
 검증된다.
@@ -912,6 +989,7 @@ Release workflow가 설치하는 kind `v0.29.0` binary는 SHA-256 checksum으로
 
 `scripts/helm_matrix.sh`
 
+- packaged chart legal files와 archive hygiene 검증
 - renderer dependency build
 - 8개 values variant render
 - KEDA ScaledObject 존재 확인
@@ -938,18 +1016,27 @@ Release workflow가 설치하는 kind `v0.29.0` binary는 SHA-256 checksum으로
 
 ### 12.4 Current publication state
 
-Public `v1.0.0`은 commit `f1a63ff`를 가리킨다. Current `v1.1.0` release
-candidate는 `bf4eb77` 이후의 보안 toolchain과 public-consumer verification
-hardening을 포함한다. 최신 runtime을 배포하는 release sequence는 다음과 같다.
+`v1.1.0`은 annotated tag `99b11fd`에 고정된 현재 공개 release다. GitHub
+Release는 2026-08-14에 발행됐고 `dense-base-1.1.0.tgz`를 release asset으로
+제공한다. Helm library chart는
+`oci://ghcr.io/denseai/charts/dense-base:1.1.0`에서 익명 조회가 가능하다.
 
-1. local commits를 `main`에 push한다.
-2. CI의 Go, Docker, Helm, kind 결과를 확인한다.
-3. 새 semantic version을 결정한다.
-4. 새 tag를 생성한다.
-5. release workflow가 tagged Go module resolution을 확인한다.
-6. OCI Helm chart를 발행하고 anonymous pull을 확인한다.
-7. 검증이 끝난 뒤 GitHub Release를 발행한다.
-8. Consumer repository가 Go module과 chart dependency를 갱신한다.
+현재 `main`은 공개된 `v1.1.0` tag를 이동하지 않고 다음 release 후보를
+누적한다. `v1.1.0` 이후 main에는 direct-peer rate-limit identity, bounded
+partition map, concurrent
+health-check coalescing, Go `1.26.6` security baseline, full-module race test,
+actionlint, chart legal/archive hygiene validation이 추가됐다.
+
+Registry 또는 checksum-proxy 전파 때문에 release job이 중단된 경우 `workflow_dispatch`의
+필수 `release_tag` 입력으로 기존 immutable tag를 다시 검증하고 발행 단계를
+재시도한다. retry는 현재 branch가 아니라 지정된 tag를 checkout하므로, 이미
+공개된 artifact와 재시도 대상 source의 대응 관계를 보존한다.
+
+다음 release에서는 새 semantic version, chart version, release note를 함께
+생성하고, release workflow가 tagged Go module resolution, Go/race/vet/vuln,
+Helm matrix, Docker smoke, kind smoke, OCI publish 및 anonymous chart 조회를
+차례로 검증한다. Consumer는 검증이 완료된 version만 Go module과 chart
+dependency에 채택한다.
 
 ---
 
@@ -961,13 +1048,16 @@ hardening을 포함한다. 최신 runtime을 배포하는 release sequence는 �
 | gRPC handler panic | Recovery interceptor | `Internal` status | error log, gRPC error metric |
 | Health check panic | HealthRegistry guard | phase `503` | check error in JSON report |
 | Health check timeout | 2초 deadline | phase `503` | timeout text in JSON report |
-| Previous health check active | per-check execution state | phase `503` | running-check text in JSON report |
+| Concurrent health probes | per-check execution state | 하나의 call을 공유하고 동일 결과 반환 | coalescing/timeout test |
+| Cancellation-ignoring health check | shared timeout and retained execution slot | phase `503`, 추가 goroutine 생성 억제 | bounded-call test |
 | HTTP startup hook failure | startup result | cleanup hooks 실행, startup error 반환 | joined error |
 | gRPC startup hook failure | startup result | listener close, health shutdown, cleanup | joined error |
 | gRPC graceful deadline | context deadline | force stop | deadline error and shutdown log |
 | Redis bootstrap failure | connection check | partitioned in-memory limiter 사용 | warning log |
 | Redis runtime failure | 100ms operation timeout and circuit state | partitioned in-memory limiter 사용 | warning/state-change log |
 | Rate limit exceeded | token bucket | HTTP `429` or gRPC `ResourceExhausted` | response/status metric |
+| Spoofed forwarded identity | direct-peer default extractor | 같은 transport peer bucket 유지 | HTTP/gRPC rotation test |
+| Partition key flood | max partition budget | unseen key를 overflow bucket으로 집계 | bounded-map/overflow test |
 | Circuit open | failure threshold | HTTP `503` or gRPC `Unavailable` | state-change log |
 | Invalid Helm values | template validation | render 종료 | explicit Helm error |
 | Runtime endpoint smoke failure | curl status/body check | CI job failure | response body, logs, workload state |
@@ -976,41 +1066,50 @@ hardening을 포함한다. 최신 runtime을 배포하는 release sequence는 �
 
 ## 14. Validation Evidence
 
-2026-08-15 `v1.1.0` release candidate에서 다음 검증이 통과했다.
+`v1.1.0` 공개 release gate와 현재 `main` post-release hardening에서 다음 검증이
+통과했다.
 
 - `go test ./...`
 - `go vet ./...`
-- `govulncheck v1.6.0 ./...` with Go `1.25.13`
-- `go test -race ./go/server`
+- `govulncheck v1.6.0 ./...` with Go `1.26.6`
+- `go test -race ./...`
 - `bash scripts/helm_matrix.sh`
 - `bash scripts/docker_smoke.sh`
 - `bash scripts/kind_smoke.sh`
 - `bash -n scripts/docker_smoke.sh scripts/kind_smoke.sh scripts/helm_matrix.sh`
 - `actionlint .github/workflows/*.yml`
 - Helm archive legal-file inspection
+- Helm archive nested artifact/local output rejection
 - clean-tree Go consumer smoke
 - DenseCore `v0.1.0` chart render against local `dense-base` `1.1.0`
 - tracked-tree and reachable-history credential-signature scan
 - `git diff --check`
 
-Docker smoke는 Go `1.25.13` builder image에서 reference runtime의 legal bundle,
+Docker smoke는 Go `1.26.6` builder image에서 reference runtime의 legal bundle,
 health, metrics, API response를 확인했다. Kind smoke는 fresh cluster에서 chart
 variant apply와 reference Deployment rollout을 수행했으며, 완료 후 임시 cluster가
-남지 않았음을 확인했다. Public tag resolution과 anonymous OCI pull은 tag와 package
-publication 이후 release workflow가 실행하는 외부 게이트다.
+남지 않았음을 확인했다. 공개 후에는 `go get github.com/DenseAI/DenseCloud@v1.1.0`와
+OCI chart의 익명 조회도 성공했으며, GitHub Release에 chart archive가 첨부됐다.
+
+2026-08-16 재검증에서 host Go `1.26.5`는 표준 라이브러리 advisory
+`GO-2026-6091`, `GO-2026-6090`, `GO-2026-6089`, `GO-2026-5972`에 도달했다.
+네 advisory의 수정 버전인 Go `1.26.6`으로 `go.mod`, Docker builder, CI와 release
+workflow를 함께 승격했다. `GOTOOLCHAIN=go1.26.6` vulnerability scan은
+`No vulnerabilities found`를 반환한다. CI와 release workflow의 exact pin은
+source와 toolchain의 검증 조합을 고정한다.
 
 ### 14.1 Test coverage map
 
 | Area | Covered behavior |
 | --- | --- |
-| HTTP middleware | request ID, panic recovery, timeout context, CORS, content type, streaming interfaces |
+| HTTP middleware | request ID, panic recovery, timeout context, CORS, content type, streaming interfaces, direct-peer limiter identity |
 | HTTP metrics | RED counters, histogram, in-flight, panic completion, cardinality policy |
 | HTTP runtime | route assembly, extension wiring, custom API prefix, startup rollback, shutdown state |
-| Health | lifecycle, dependency phases, timeout, panic, request cancellation, overlap suppression |
-| gRPC middleware | request ID, recovery, rate limiting, circuit breaker, metrics, unary/stream parity |
+| Health | lifecycle, dependency phases, timeout, panic, request cancellation, concurrent call coalescing, stuck-check containment |
+| gRPC middleware | request ID, recovery, direct-peer keyed rate limiting, circuit breaker, metrics, unary/stream parity |
 | gRPC runtime | health transition, health RPC, metrics, startup rollback, stop semantics, deadline force stop |
 | Runner | startup ordering, signal/context behavior, pre/post shutdown ordering, error propagation |
-| Helm | values matrix, required relation, negative KEDA case |
+| Helm | values matrix, required relation, negative KEDA case, legal/archive hygiene |
 | Docker | real process health, metrics, API response |
 | kind | manifest apply, Deployment rollout, Service endpoint response |
 
@@ -1041,15 +1140,16 @@ Repository validation 이후 운영 환경에서 다음 workstream을 실행한�
 | Graceful shutdown | MVP-ready | ordered hook and forced-stop tests |
 | Telemetry | MVP-ready | HTTP/gRPC metric and OTel tests |
 | Helm chart | MVP-ready | lint, matrix, validation, kind apply/runtime |
-| Release automation | MVP-ready | verify and publish workflow defined |
-| Public latest version | Pending | `v1.1.0` tag와 public artifact verification |
+| Release automation | MVP-ready | immutable-tag retry와 publish/anonymous-OCI verification workflow |
+| Public latest version | Published | `v1.1.0` Go module, GitHub Release, OCI chart 공개 |
+| Post-release main | Validated | trust-boundary, concurrency, Go `1.26.6`, race, package hardening |
 | Controller qualification | Pending | field workstreams listed above |
 | Dense Series adoption | Per product | consumer migration gate |
 
 ### 15.2 Priority order
 
-1. 최신 runtime commit을 포함한 새 DenseCloud version을 발행한다.
-2. DenseCore와 DenseOps에서 새 module/chart version을 적용한다.
+1. 현재 main의 hardening과 Go `1.26.6` baseline을 새 semantic version으로 발행한다.
+2. DenseCore와 DenseOps에서 새 module/chart version adoption을 완료한다.
 3. 실제 cert-manager, KEDA, Prometheus Operator, CNI 환경에서 field
    qualification을 수행한다.
 4. Product별 readiness dependency와 autoscaling metric을 연결한다.
@@ -1063,14 +1163,27 @@ DenseCloud는 shared cloud-native chassis의 repository-level MVP를 완성했�
 HTTP와 gRPC runtime, health, observability, graceful shutdown, Helm packaging,
 executable release gate가 하나의 lifecycle contract로 연결돼 있다.
 
-현재 기술 투자의 중심은 세 가지다.
+현재 기술 투자의 중심은 네 가지다.
 
-- 최신 version publication
+- consumer adoption
+- post-release hardening publication
 - 실제 Kubernetes environment qualification
-- Dense Series consumer adoption
+- product별 readiness와 autoscaling contract 정렬
 
-이 세 workstream이 완료되면 DenseCloud의 검증 범위가 repository-level
+이 네 workstream이 완료되면 DenseCloud의 검증 범위가 repository-level
 MVP에서 product-family production baseline으로 확장된다.
+
+### 15.4 Evidence and hypothesis boundary
+
+| Classification | 이 문서에서 확인된 내용 |
+| --- | --- |
+| Implemented fact | HTTP/gRPC runtime, health state, ordered shutdown, middleware, telemetry, Helm templates가 현재 source에 존재한다. |
+| Automated evidence | Go test/race/vet/vuln, workflow lint, chart package/matrix, Docker, kind gate가 현재 repository에 연결돼 있다. |
+| Published evidence | `v1.1.0` Go module, GitHub Release, chart archive, anonymous OCI chart가 공개 소비 경로를 통과했다. |
+| Main-only evidence | limiter trust boundary, bounded partitions, health coalescing, Go `1.26.6`, package hardening은 local validation을 통과했으며 새 public tag를 기다린다. |
+| Product hypothesis | 공통 chassis가 product bootstrap 시간, contract drift, 공통 수정 전파 시간을 줄인다는 가설은 consumer adoption 지표로 검증한다. |
+| Market hypothesis | AI inference product-line과 self-hosted Kubernetes 운영팀이 핵심 niche라는 판단은 repository architecture에서 도출한 positioning이며 외부 고객 discovery가 다음 증거 단계다. |
+| Field gap | 실제 controller/CNI, 장기 stream drain, autoscaling, certificate rotation, product inference QA는 downstream 환경에서 검증한다. |
 
 ---
 
@@ -1088,6 +1201,7 @@ MVP에서 product-family production baseline으로 확장된다.
 | gRPC middleware | [`go/middleware/grpc.go`](go/middleware/grpc.go) | [`go/middleware/grpc_test.go`](go/middleware/grpc_test.go) |
 | gRPC preset | [`go/middleware/grpc_preset.go`](go/middleware/grpc_preset.go) | [`go/middleware/grpc_preset_test.go`](go/middleware/grpc_preset_test.go) |
 | Rate limiting | [`go/middleware/ratelimit.go`](go/middleware/ratelimit.go) | [`go/middleware/ratelimit_test.go`](go/middleware/ratelimit_test.go) |
+| Bounded keyed limiting | [`go/middleware/ratelimit_partitioned.go`](go/middleware/ratelimit_partitioned.go) | [`go/middleware/ratelimit_test.go`](go/middleware/ratelimit_test.go) |
 | Redis rate limiting | [`go/middleware/ratelimit_redis.go`](go/middleware/ratelimit_redis.go) | [`go/middleware/ratelimit_redis_test.go`](go/middleware/ratelimit_redis_test.go) |
 | Circuit breaker | [`go/middleware/circuitbreaker.go`](go/middleware/circuitbreaker.go) | [`go/middleware/http_test.go`](go/middleware/http_test.go) |
 | HTTP metrics | [`go/telemetry/metrics.go`](go/telemetry/metrics.go) | [`go/telemetry/metrics_test.go`](go/telemetry/metrics_test.go) |
@@ -1096,6 +1210,7 @@ MVP에서 product-family production baseline으로 확장된다.
 | Combined example | [`go/examples/grpc_runtime/main.go`](go/examples/grpc_runtime/main.go) | Go build/test gate |
 | Helm defaults | [`charts/dense-base/values.yaml`](charts/dense-base/values.yaml) | renderer matrix |
 | Helm validation | [`charts/dense-base/templates/_validate.tpl`](charts/dense-base/templates/_validate.tpl) | [`scripts/helm_matrix.sh`](scripts/helm_matrix.sh) |
+| Helm package integrity | [`scripts/package_helm.sh`](scripts/package_helm.sh) | [`helm-ci.yml`](.github/workflows/helm-ci.yml) |
 | Deployment template | [`charts/dense-base/templates/_deployment.tpl`](charts/dense-base/templates/_deployment.tpl) | [`scripts/kind_smoke.sh`](scripts/kind_smoke.sh) |
 | Docker runtime gate | [`scripts/docker_smoke.sh`](scripts/docker_smoke.sh) | [`docker-ci.yml`](.github/workflows/docker-ci.yml) |
 | kind runtime gate | [`scripts/kind_smoke.sh`](scripts/kind_smoke.sh) | [`helm-ci.yml`](.github/workflows/helm-ci.yml) |
@@ -1116,6 +1231,7 @@ MVP에서 product-family production baseline으로 확장된다.
 | `middleware.GRPCServerPreset` | canonical gRPC interceptor order |
 | `middleware.NewRateLimiter` | process token bucket |
 | `middleware.NewPartitionedRateLimiter` | keyed process token bucket |
+| `middleware.NewPartitionedRateLimiterWithConfig` | keyed bucket TTL, partition bound, cleanup policy |
 | `middleware.NewRedisOrPartitionedRateLimiter` | multi-pod limiter with local continuity |
 | `middleware.CircuitBreaker` | HTTP failure circuit |
 | `telemetry.Init` | process JSON logger |
