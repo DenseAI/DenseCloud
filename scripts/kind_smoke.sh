@@ -265,6 +265,7 @@ require_command kind
 require_command kubectl
 
 cd "${REPO_ROOT}"
+rm -rf "${RENDERER_DIR}/charts"
 helm dependency build "${RENDERER_DIR}"
 
 cgroup_version="$(detect_cgroup_version)"

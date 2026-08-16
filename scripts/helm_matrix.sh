@@ -18,8 +18,10 @@ VALUES_FILES=(
 
 cd "${REPO_ROOT}"
 helm lint charts/dense-base
+rm -rf "${RENDERER_DIR}/charts"
 helm dependency build "${RENDERER_DIR}"
 helm lint "${RENDERER_DIR}"
+bash "${REPO_ROOT}/scripts/package_helm.sh" /tmp/densecloud-chart-validation >/dev/null
 
 for values_file in "${VALUES_FILES[@]}"; do
   echo "rendering ${values_file}"

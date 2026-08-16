@@ -23,6 +23,9 @@ type KeyedRateLimiter interface {
 }
 
 // RateLimitKeyExtractor returns the logical rate-limit key for an HTTP request.
+// The default keyed limiter uses the transport peer from RemoteAddr. Deployments
+// behind a trusted proxy or post-auth tenant boundary should provide an
+// explicit extractor instead of trusting client-controlled forwarding headers.
 type RateLimitKeyExtractor func(*http.Request) string
 
 // RateLimiter implements token bucket rate limiting.
@@ -108,23 +111,15 @@ func RateLimitWithInterface(limiter RateLimiterInterface) func(http.Handler) htt
 }
 
 // RateLimitWithKey creates keyed rate limiting middleware.
+// When extractor is nil, DenseCloud uses the direct transport peer derived from
+// RemoteAddr. Trusted proxy, tenant, or API-key based rate limits must supply a
+// custom extractor after the proxy or auth layer has validated that identity.
 func RateLimitWithKey(limiter KeyedRateLimiter, extractor RateLimitKeyExtractor) func(http.Handler) http.Handler {
 	limiterNil := isNilRateLimiter(limiter)
 	var nilLimiterLogOnce sync.Once
 
 	if extractor == nil {
-		extractor = func(r *http.Request) string {
-			if r == nil {
-				return "global"
-			}
-			if forwardedIP := forwardedIPKey(r.Header.Get("X-Forwarded-For")); forwardedIP != "" {
-				return forwardedIP
-			}
-			if remoteIP := remoteAddrKey(r.RemoteAddr); remoteIP != "" {
-				return remoteIP
-			}
-			return "global"
-		}
+		extractor = defaultHTTPRateLimitKey
 	}
 
 	return func(next http.Handler) http.Handler {
@@ -158,6 +153,16 @@ func RateLimitWithKey(limiter KeyedRateLimiter, extractor RateLimitKeyExtractor)
 			next.ServeHTTP(w, r)
 		})
 	}
+}
+
+func defaultHTTPRateLimitKey(r *http.Request) string {
+	if r == nil {
+		return "global"
+	}
+	if remoteIP := remoteAddrKey(r.RemoteAddr); remoteIP != "" {
+		return remoteIP
+	}
+	return "global"
 }
 
 func isNilRateLimiter(limiter any) bool {

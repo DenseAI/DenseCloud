@@ -213,6 +213,38 @@ func TestLoggingKeepsFirstStatusCode(t *testing.T) {
 	}
 }
 
+func TestLoggingSeparatesPeerAndForwardedFor(t *testing.T) {
+	original := slog.Default()
+	var logs bytes.Buffer
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, nil)))
+	defer slog.SetDefault(original)
+
+	handler := Logging()(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	req.RemoteAddr = "203.0.113.55:41000"
+	req.Header.Set("X-Forwarded-For", "198.51.100.7, 198.51.100.8")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	records := decodeJSONLogLines(t, logs.Bytes())
+	if len(records) != 1 {
+		t.Fatalf("expected one request log, got %d: %s", len(records), logs.String())
+	}
+	record := records[0]
+	if got, _ := record["peer_ip"].(string); got != "203.0.113.55" {
+		t.Fatalf("expected peer_ip to use RemoteAddr host, got %q", got)
+	}
+	if got, _ := record["forwarded_for"].(string); got != "198.51.100.7" {
+		t.Fatalf("expected forwarded_for to log the untrusted first hop separately, got %q", got)
+	}
+	if _, ok := record["client_ip"]; ok {
+		t.Fatalf("did not expect trusted client_ip field in log record: %v", record)
+	}
+}
+
 func TestCircuitBreakerPreservesFlusher(t *testing.T) {
 	cfg := DefaultCircuitBreakerConfig()
 	cfg.ReadyToTrip = 100

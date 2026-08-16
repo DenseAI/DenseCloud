@@ -19,8 +19,8 @@ Use this checklist before each public release.
 - `CONTRIBUTING.md` present with contribution and review expectations.
 - Verify third-party dependency licenses are compatible with Apache 2.0
   distribution.
-- Verify the packaged Helm chart and reference image contain `LICENSE` and
-  `NOTICE`.
+- Verify the packaged Helm chart and reference image contain `LICENSE`,
+  `NOTICE`, and `THIRD_PARTY_NOTICES.md`.
 
 ## 3. Public Documentation
 
@@ -39,6 +39,9 @@ Use this checklist before each public release.
 - Package and publish the `dense-base` chart to the OCI registry.
 - Confirm the release tag matches the Helm chart version and has versioned
   release notes under `docs/releases/`.
+- Confirm the packaged chart archive contains `LICENSE`, `NOTICE`, and
+  `THIRD_PARTY_NOTICES.md`, and does not contain nested generated chart archives
+  or local build output.
 - Run `govulncheck` and resolve every reachable advisory before tagging.
 - Verify `go get` and Helm dependency resolution succeed from a clean public
   environment.

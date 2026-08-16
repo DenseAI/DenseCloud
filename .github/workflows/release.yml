@@ -36,7 +36,7 @@ jobs:
         run: go test ./...
 
       - name: Go race test
-        run: go test -race ./go/server
+        run: go test -race ./...
 
       - name: Go vet
         run: go vet ./...
@@ -51,11 +51,20 @@ jobs:
 
       - name: Verify tag, chart, and release notes
         run: |
+          git fetch --force --tags
+          git show-ref --verify --quiet "refs/tags/${RELEASE_TAG}"
+          test "$(git rev-parse HEAD)" = "$(git rev-list -n1 "refs/tags/${RELEASE_TAG}^{commit}")"
           test "${RELEASE_TAG#v}" != "${RELEASE_TAG}"
           release_version="${RELEASE_TAG#v}"
           chart_version="$(helm show chart charts/dense-base | awk '/^version:/ { print $2 }')"
           test "${release_version}" = "${chart_version}"
           test -f "docs/releases/${RELEASE_TAG}.md"
+
+      - name: Install actionlint
+        run: go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.8
+
+      - name: Lint workflow YAML
+        run: '"$(go env GOPATH)/bin/actionlint" -color'
 
       - name: Verify tagged Go module resolves publicly
         run: |

@@ -1,6 +1,6 @@
 # DenseCloud Public Scrub Report
 
-Date: 2026-08-15
+Date: 2026-08-16
 Baseline: `bf4eb77` plus the local `v1.1.0` release-candidate hardening
 
 This report records the release-candidate scrub of the tracked working tree and
@@ -38,8 +38,11 @@ review.
   release surfaces.
 - The Dockerfile produces a reference validation image, not a consumer-facing
   Dense product image.
+- `DenseCloud_CTO_Report.md` is tracked in the public repository and remains an
+  intentional public architecture reference.
 - Ignored IDE files, local build outputs, caches, and generated chart archives
-  are outside the release tree.
+  such as `charts/dense-base/examples/renderer/charts/dense-base-1.1.0.tgz`
+  are outside the tracked release tree.
 
 ## Remaining External Checks
 

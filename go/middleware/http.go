@@ -290,14 +290,8 @@ func Logging() func(http.Handler) http.Handler {
 			next.ServeHTTP(wrapped, r)
 
 			latencyMs := float64(time.Since(start).Microseconds()) / 1000.0
-			clientIP := r.RemoteAddr
-			if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
-				if i := strings.Index(fwd, ","); i >= 0 {
-					clientIP = strings.TrimSpace(fwd[:i])
-				} else {
-					clientIP = strings.TrimSpace(fwd)
-				}
-			}
+			peerIP := remoteAddrKey(r.RemoteAddr)
+			forwardedFor := forwardedIPKey(r.Header.Get("X-Forwarded-For"))
 
 			attrs := []any{
 				slog.String("request_id", GetRequestID(r.Context())),
@@ -305,9 +299,12 @@ func Logging() func(http.Handler) http.Handler {
 				slog.String("path", r.URL.Path),
 				slog.Int("status_code", wrapped.statusCode),
 				slog.Float64("latency_ms", latencyMs),
-				slog.String("client_ip", clientIP),
+				slog.String("peer_ip", peerIP),
 				slog.String("user_agent", r.UserAgent()),
 				slog.Int64("bytes_written", wrapped.written),
+			}
+			if forwardedFor != "" {
+				attrs = append(attrs, slog.String("forwarded_for", forwardedFor))
 			}
 
 			switch {

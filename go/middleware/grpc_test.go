@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/DenseAI/DenseCloud/go/telemetry"
 	"google.golang.org/grpc"
@@ -87,6 +88,34 @@ func TestDefaultGRPCKey_PrefersStableClientIdentityOverRequestID(t *testing.T) {
 
 	if got := defaultGRPCKey(ctx, "/dense.Service/Call"); got != "203.0.113.10" {
 		t.Fatalf("defaultGRPCKey() = %q, want stable peer IP", got)
+	}
+}
+
+func TestGRPCRateLimitUnaryWithKey_DefaultExtractorIgnoresSpoofedMetadata(t *testing.T) {
+	t.Parallel()
+
+	limiter := NewPartitionedRateLimiter(1, 1, time.Minute)
+	interceptor := GRPCRateLimitUnaryWithKey(limiter, nil)
+
+	call := func(forwardedFor, apiKey string) error {
+		ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs(
+			"x-forwarded-for", forwardedFor,
+			"x-api-key", apiKey,
+		))
+		ctx = peer.NewContext(ctx, &peer.Peer{
+			Addr: &net.TCPAddr{IP: net.ParseIP("203.0.113.12"), Port: 50051},
+		})
+		_, err := interceptor(ctx, nil, &grpc.UnaryServerInfo{FullMethod: "/dense.Service/Call"}, func(context.Context, any) (any, error) {
+			return "ok", nil
+		})
+		return err
+	}
+
+	if err := call("198.51.100.1", "tenant-a"); err != nil {
+		t.Fatalf("expected first default-key call to pass, got %v", err)
+	}
+	if code := status.Code(call("198.51.100.2", "tenant-b")); code != codes.ResourceExhausted {
+		t.Fatalf("expected rotated x-forwarded-for/x-api-key metadata to stay limited by peer IP, got %s", code)
 	}
 }
 

@@ -259,7 +259,9 @@ func GRPCRateLimitStream(limiter RateLimiterInterface) grpc.StreamServerIntercep
 	}
 }
 
-// GRPCRateLimitUnaryWithKey applies keyed unary rate limiting.
+// GRPCRateLimitUnaryWithKey applies keyed unary rate limiting. When extractor is
+// nil, DenseCloud uses the direct gRPC peer address. Proxy, tenant, or API-key
+// rate limits must provide a custom extractor after that identity is trusted.
 func GRPCRateLimitUnaryWithKey(limiter KeyedRateLimiter, extractor UnaryRateLimitKeyExtractor) grpc.UnaryServerInterceptor {
 	limiterNil := isNilRateLimiter(limiter)
 
@@ -284,7 +286,10 @@ func GRPCRateLimitUnaryWithKey(limiter KeyedRateLimiter, extractor UnaryRateLimi
 	}
 }
 
-// GRPCRateLimitStreamWithKey applies keyed stream rate limiting.
+// GRPCRateLimitStreamWithKey applies keyed stream rate limiting. When extractor
+// is nil, DenseCloud uses the direct gRPC peer address. Proxy, tenant, or
+// API-key rate limits must provide a custom extractor after that identity is
+// trusted.
 func GRPCRateLimitStreamWithKey(limiter KeyedRateLimiter, extractor StreamRateLimitKeyExtractor) grpc.StreamServerInterceptor {
 	limiterNil := isNilRateLimiter(limiter)
 
@@ -401,29 +406,10 @@ func grpcRequestID(ctx context.Context) string {
 }
 
 func defaultGRPCKey(ctx context.Context, fullMethod string) string {
-	if md, ok := metadata.FromIncomingContext(ctx); ok {
-		if forwardedIP := forwardedIPKey(firstGRPCMetadataValue(md, "x-forwarded-for")); forwardedIP != "" {
-			return forwardedIP
-		}
-		if apiKey := firstGRPCMetadataValue(md, "x-api-key"); apiKey != "" {
-			return apiKey
-		}
-	}
 	if peerAddr := grpcPeerKey(ctx); peerAddr != "" {
 		return peerAddr
 	}
-	if fullMethod != "" {
-		return fullMethod
-	}
 	return "grpc-global"
-}
-
-func firstGRPCMetadataValue(md metadata.MD, key string) string {
-	values := md.Get(key)
-	if len(values) == 0 {
-		return ""
-	}
-	return strings.TrimSpace(values[0])
 }
 
 func grpcPeerKey(ctx context.Context) string {

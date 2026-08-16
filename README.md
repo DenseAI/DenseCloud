@@ -131,12 +131,17 @@ repositories, not by DenseCloud itself.
 DenseCloud releases are gated on the same validations run in CI:
 
 - `go test ./...`
-- `go test -race ./go/server`
+- `go test -race ./...`
 - `go vet ./...`
 - `go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...`
 - `bash scripts/helm_matrix.sh`
 - `bash scripts/docker_smoke.sh`
 - `bash scripts/kind_smoke.sh`
+
+The default keyed HTTP and gRPC rate-limit middleware uses the direct transport
+peer address only. Deployments behind a trusted proxy, gateway, or
+authentication layer should install an explicit key extractor after that layer
+has validated the forwarded client or tenant identity.
 
 ## Design rules
 

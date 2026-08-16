@@ -13,8 +13,12 @@ real Dense Series release artifact.
 Build the local dependency first:
 
 ```bash
+rm -rf charts/dense-base/examples/renderer/charts
 helm dependency build charts/dense-base/examples/renderer
 ```
+
+The generated `charts/` directory is ignored and is not part of the public
+release source tree.
 
 Render the baseline contract:
 

@@ -39,8 +39,8 @@ jobs:
       - name: Helm lint
         run: helm lint charts/dense-base
 
-      - name: Helm package
-        run: helm package charts/dense-base --destination /tmp/charts
+      - name: Helm package validation
+        run: bash scripts/package_helm.sh /tmp/charts
 
   render-matrix:
     runs-on: ubuntu-latest
@@ -66,7 +66,9 @@ jobs:
           version: v3.15.4
 
       - name: Build renderer dependencies
-        run: helm dependency build charts/dense-base/examples/renderer
+        run: |
+          rm -rf charts/dense-base/examples/renderer/charts
+          helm dependency build charts/dense-base/examples/renderer
 
       - name: Render example matrix
         run: >

@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"sync"
@@ -39,22 +40,56 @@ type healthCheckEntry struct {
 
 type healthCheckExecution struct {
 	mu      sync.Mutex
-	running bool
+	current *healthCheckCall
 }
 
-func (e *healthCheckExecution) tryStart() bool {
+type healthCheckCall struct {
+	ctx     context.Context
+	cancel  context.CancelFunc
+	timeout time.Duration
+	done    chan struct{}
+	err     error
+}
+
+func (e *healthCheckExecution) startOrJoin(fn HealthCheck, timeout time.Duration) *healthCheckCall {
 	e.mu.Lock()
-	defer e.mu.Unlock()
-	if e.running {
-		return false
+	if e.current != nil {
+		call := e.current
+		e.mu.Unlock()
+		return call
 	}
-	e.running = true
-	return true
+	callCtx, cancel := context.WithTimeout(context.Background(), timeout)
+	call := &healthCheckCall{
+		ctx:     callCtx,
+		cancel:  cancel,
+		timeout: timeout,
+		done:    make(chan struct{}),
+	}
+	e.current = call
+	e.mu.Unlock()
+
+	go func() {
+		var checkErr error
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				checkErr = fmt.Errorf("health check panicked: %v", recovered)
+			}
+			call.err = checkErr
+			close(call.done)
+			e.finish(call)
+			call.cancel()
+		}()
+		checkErr = fn(callCtx)
+	}()
+
+	return call
 }
 
-func (e *healthCheckExecution) finish() {
+func (e *healthCheckExecution) finish(call *healthCheckCall) {
 	e.mu.Lock()
-	e.running = false
+	if e.current == call {
+		e.current = nil
+	}
 	e.mu.Unlock()
 }
 
@@ -323,38 +358,43 @@ func (r *HealthRegistry) runCheck(ctx context.Context, check healthCheckEntry) e
 	if check.execution == nil {
 		return fmt.Errorf("health check execution state is unavailable")
 	}
-	if !check.execution.tryStart() {
-		return fmt.Errorf("health check is still running from previous evaluation")
-	}
-
-	checkCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-
-	result := make(chan error, 1)
-	go func() {
-		var checkErr error
-		defer func() {
-			if recovered := recover(); recovered != nil {
-				checkErr = fmt.Errorf("health check panicked: %v", recovered)
-			}
-			check.execution.finish()
-			result <- checkErr
-		}()
-		checkErr = check.fn(checkCtx)
-	}()
+	call := check.execution.startOrJoin(check.fn, timeout)
 
 	select {
-	case err := <-result:
-		return err
-	case <-checkCtx.Done():
+	case <-call.done:
+		return normalizeHealthCheckCallError(call)
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-call.ctx.Done():
+		select {
+		case <-call.done:
+			return normalizeHealthCheckCallError(call)
+		default:
+		}
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		if checkCtx.Err() == context.DeadlineExceeded {
-			return fmt.Errorf("health check timed out after %s: %w", timeout, checkCtx.Err())
+		if errors.Is(call.ctx.Err(), context.DeadlineExceeded) {
+			return fmt.Errorf("health check timed out after %s: %w", call.timeout, context.DeadlineExceeded)
 		}
-		return checkCtx.Err()
+		return call.ctx.Err()
 	}
+}
+
+func normalizeHealthCheckCallError(call *healthCheckCall) error {
+	if call == nil {
+		return fmt.Errorf("health check execution state is unavailable")
+	}
+	if call.ctx.Err() == context.DeadlineExceeded {
+		return fmt.Errorf("health check timed out after %s: %w", call.timeout, context.DeadlineExceeded)
+	}
+	if err := call.err; err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			return fmt.Errorf("health check timed out after %s: %w", call.timeout, context.DeadlineExceeded)
+		}
+		return err
+	}
+	return nil
 }
 
 func (r *HealthRegistry) setHealthCheckTimeout(timeout time.Duration) {

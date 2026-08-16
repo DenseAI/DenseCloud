@@ -5,7 +5,9 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -595,49 +597,184 @@ func TestHTTPRuntimeHealthCheckTimeoutFailsClosed(t *testing.T) {
 	}
 }
 
-func TestHealthRegistrySuppressesOverlappingTimedOutChecks(t *testing.T) {
+func TestHealthRegistryCoalescesConcurrentLiveAndReadyChecks(t *testing.T) {
 	t.Parallel()
 
-	release := make(chan struct{})
-	finished := make(chan struct{})
 	var calls atomic.Int32
-	registry := NewHealthRegistry(WithHealthCheckTimeout(20 * time.Millisecond))
-	registry.RegisterReadiness("stuck", func(context.Context) error {
-		if calls.Add(1) == 1 {
-			<-release
-			close(finished)
+	registry := NewHealthRegistry(WithHealthCheckTimeout(200 * time.Millisecond))
+	registry.RegisterCheck("shared", func(context.Context) error {
+		calls.Add(1)
+		time.Sleep(40 * time.Millisecond)
+		return nil
+	}, HealthPhaseLive, HealthPhaseReady)
+	registry.MarkStarted()
+
+	type response struct {
+		code int
+		body string
+	}
+	results := make(chan response, 2)
+	var wg sync.WaitGroup
+	for _, phase := range []string{"live", "ready"} {
+		wg.Add(1)
+		go func(phase string) {
+			defer wg.Done()
+			rec := httptest.NewRecorder()
+			registry.phaseHandler(phase).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/health/"+phase, nil))
+			results <- response{code: rec.Code, body: rec.Body.String()}
+		}(phase)
+	}
+	wg.Wait()
+	close(results)
+
+	for result := range results {
+		if result.code != http.StatusOK {
+			t.Fatalf("expected shared healthy check to satisfy both probes, got code=%d body=%q", result.code, result.body)
 		}
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("expected one shared in-flight execution, got %d", calls.Load())
+	}
+}
+
+func TestHealthRegistryCoalescesSummaryAndPhaseChecks(t *testing.T) {
+	t.Parallel()
+
+	var calls atomic.Int32
+	registry := NewHealthRegistry(WithHealthCheckTimeout(200 * time.Millisecond))
+	registry.RegisterReadiness("shared", func(context.Context) error {
+		calls.Add(1)
+		time.Sleep(40 * time.Millisecond)
 		return nil
 	})
 	registry.MarkStarted()
 
-	first := httptest.NewRecorder()
-	registry.phaseHandler("ready").ServeHTTP(first, httptest.NewRequest(http.MethodGet, "/health/ready", nil))
-	if first.Code != http.StatusServiceUnavailable {
-		t.Fatalf("first readiness status = %d, want %d", first.Code, http.StatusServiceUnavailable)
+	type response struct {
+		code int
+		body string
+	}
+	results := make(chan response, 2)
+	var wg sync.WaitGroup
+	startRequest := func(path string, handler http.Handler) {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+			results <- response{code: rec.Code, body: rec.Body.String()}
+		}()
 	}
 
-	second := httptest.NewRecorder()
-	registry.phaseHandler("ready").ServeHTTP(second, httptest.NewRequest(http.MethodGet, "/health/ready", nil))
-	if second.Code != http.StatusServiceUnavailable {
-		t.Fatalf("overlapping readiness status = %d, want %d", second.Code, http.StatusServiceUnavailable)
+	startRequest("/health", registry.summaryHandler())
+	startRequest("/health/ready", registry.phaseHandler("ready"))
+	wg.Wait()
+	close(results)
+
+	for result := range results {
+		if result.code != http.StatusOK {
+			t.Fatalf("expected summary and phase probes to share a healthy check, got code=%d body=%q", result.code, result.body)
+		}
 	}
 	if calls.Load() != 1 {
-		t.Fatalf("health check calls = %d, want one in-flight call", calls.Load())
+		t.Fatalf("expected one shared execution across summary and phase probes, got %d", calls.Load())
 	}
-	if body := second.Body.String(); !strings.Contains(body, "still running from previous evaluation") {
-		t.Fatalf("expected overlapping-check failure, got %q", body)
+}
+
+func TestHealthRegistryTimedOutSharedCheckFailsTruthfully(t *testing.T) {
+	t.Parallel()
+
+	var calls atomic.Int32
+	registry := NewHealthRegistry(WithHealthCheckTimeout(20 * time.Millisecond))
+	registry.RegisterCheck("shared", func(context.Context) error {
+		calls.Add(1)
+		time.Sleep(50 * time.Millisecond)
+		return nil
+	}, HealthPhaseLive, HealthPhaseReady)
+	registry.MarkStarted()
+
+	type response struct {
+		code int
+		body string
+	}
+	results := make(chan response, 2)
+	var wg sync.WaitGroup
+	for _, phase := range []string{"live", "ready"} {
+		wg.Add(1)
+		go func(phase string) {
+			defer wg.Done()
+			rec := httptest.NewRecorder()
+			registry.phaseHandler(phase).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/health/"+phase, nil))
+			results <- response{code: rec.Code, body: rec.Body.String()}
+		}(phase)
+	}
+	wg.Wait()
+	close(results)
+
+	for result := range results {
+		if result.code != http.StatusServiceUnavailable || !strings.Contains(result.body, "timed out after 20ms") {
+			t.Fatalf("expected shared timeout failure, got code=%d body=%q", result.code, result.body)
+		}
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("expected one shared timed-out execution, got %d", calls.Load())
+	}
+}
+
+func TestHealthRegistryContainsIgnoringCancellationCheck(t *testing.T) {
+	t.Parallel()
+
+	release := make(chan struct{})
+	var calls atomic.Int32
+	registry := NewHealthRegistry(WithHealthCheckTimeout(20 * time.Millisecond))
+	registry.RegisterReadiness("stuck", func(context.Context) error {
+		calls.Add(1)
+		<-release
+		return nil
+	})
+	registry.MarkStarted()
+
+	before := runtime.NumGoroutine()
+	var wg sync.WaitGroup
+	results := make(chan string, 8)
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			rec := httptest.NewRecorder()
+			registry.phaseHandler("ready").ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/health/ready", nil))
+			if rec.Code != http.StatusServiceUnavailable {
+				results <- rec.Body.String()
+				return
+			}
+			results <- rec.Body.String()
+		}()
+	}
+	wg.Wait()
+	close(results)
+
+	for body := range results {
+		if !strings.Contains(body, "timed out after 20ms") {
+			t.Fatalf("expected timeout while the stuck check remained in flight, got %q", body)
+		}
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("expected one stuck execution to be shared across overlapping probes, got %d", calls.Load())
 	}
 
 	close(release)
-	<-finished
-	third := httptest.NewRecorder()
-	registry.phaseHandler("ready").ServeHTTP(third, httptest.NewRequest(http.MethodGet, "/health/ready", nil))
-	if third.Code != http.StatusOK {
-		t.Fatalf("readiness after stuck check exits = %d, want %d", third.Code, http.StatusOK)
+	time.Sleep(10 * time.Millisecond)
+	after := runtime.NumGoroutine()
+	if delta := after - before; delta > 4 {
+		t.Fatalf("expected bounded goroutine growth, before=%d after=%d", before, after)
+	}
+
+	final := httptest.NewRecorder()
+	registry.phaseHandler("ready").ServeHTTP(final, httptest.NewRequest(http.MethodGet, "/health/ready", nil))
+	if final.Code != http.StatusOK {
+		t.Fatalf("expected readiness to recover after the stuck check returns, got %d body=%q", final.Code, final.Body.String())
 	}
 	if calls.Load() != 2 {
-		t.Fatalf("health check calls after recovery = %d, want 2", calls.Load())
+		t.Fatalf("expected a new execution after the stuck check exited, got %d", calls.Load())
 	}
 }
 
