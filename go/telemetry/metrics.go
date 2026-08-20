@@ -176,7 +176,12 @@ func (m *HTTPMetrics) observe(method, path string, statusCode int, seconds float
 
 func (m *HTTPMetrics) renderPrometheus() string {
 	m.mu.RLock()
-	defer m.mu.RUnlock()
+	requests := cloneRequestMetrics(m.requests)
+	errors := cloneRequestMetrics(m.errors)
+	durations := cloneDurationMetrics(m.durations)
+	buckets := append([]float64(nil), m.buckets...)
+	collectors := append([]PrometheusCollector(nil), m.collectors...)
+	m.mu.RUnlock()
 
 	var builder strings.Builder
 
@@ -190,7 +195,7 @@ func (m *HTTPMetrics) renderPrometheus() string {
 
 	builder.WriteString("# HELP densecloud_http_requests_total Total number of HTTP requests completed by the DenseCloud runtime.\n")
 	builder.WriteString("# TYPE densecloud_http_requests_total counter\n")
-	for _, key := range sortedRequestMetricKeys(m.requests) {
+	for _, key := range sortedRequestMetricKeys(requests) {
 		builder.WriteString("densecloud_http_requests_total")
 		builder.WriteString(m.labels(
 			"method", key.Method,
@@ -198,13 +203,13 @@ func (m *HTTPMetrics) renderPrometheus() string {
 			"status_class", key.StatusClass,
 		))
 		builder.WriteByte(' ')
-		builder.WriteString(strconv.FormatUint(m.requests[key], 10))
+		builder.WriteString(strconv.FormatUint(requests[key], 10))
 		builder.WriteByte('\n')
 	}
 
 	builder.WriteString("# HELP densecloud_http_request_errors_total Total number of HTTP requests that completed with client/server errors.\n")
 	builder.WriteString("# TYPE densecloud_http_request_errors_total counter\n")
-	for _, key := range sortedRequestMetricKeys(m.errors) {
+	for _, key := range sortedRequestMetricKeys(errors) {
 		builder.WriteString("densecloud_http_request_errors_total")
 		builder.WriteString(m.labels(
 			"method", key.Method,
@@ -212,16 +217,16 @@ func (m *HTTPMetrics) renderPrometheus() string {
 			"status_class", key.StatusClass,
 		))
 		builder.WriteByte(' ')
-		builder.WriteString(strconv.FormatUint(m.errors[key], 10))
+		builder.WriteString(strconv.FormatUint(errors[key], 10))
 		builder.WriteByte('\n')
 	}
 
 	builder.WriteString("# HELP densecloud_http_request_duration_seconds HTTP request latency in seconds.\n")
 	builder.WriteString("# TYPE densecloud_http_request_duration_seconds histogram\n")
-	for _, key := range sortedDurationMetricKeys(m.durations) {
-		value := m.durations[key]
+	for _, key := range sortedDurationMetricKeys(durations) {
+		value := durations[key]
 		var cumulative uint64
-		for i, upperBound := range m.buckets {
+		for i, upperBound := range buckets {
 			cumulative += value.buckets[i]
 			builder.WriteString("densecloud_http_request_duration_seconds_bucket")
 			builder.WriteString(m.labels(
@@ -233,7 +238,7 @@ func (m *HTTPMetrics) renderPrometheus() string {
 			builder.WriteString(strconv.FormatUint(cumulative, 10))
 			builder.WriteByte('\n')
 		}
-		cumulative += value.buckets[len(m.buckets)]
+		cumulative += value.buckets[len(buckets)]
 		builder.WriteString("densecloud_http_request_duration_seconds_bucket")
 		builder.WriteString(m.labels(
 			"method", key.Method,
@@ -263,7 +268,7 @@ func (m *HTTPMetrics) renderPrometheus() string {
 		builder.WriteByte('\n')
 	}
 
-	for _, collector := range m.collectors {
+	for _, collector := range collectors {
 		if collector == nil {
 			continue
 		}
@@ -274,6 +279,29 @@ func (m *HTTPMetrics) renderPrometheus() string {
 	}
 
 	return builder.String()
+}
+
+func cloneRequestMetrics(source map[requestMetricKey]uint64) map[requestMetricKey]uint64 {
+	cloned := make(map[requestMetricKey]uint64, len(source))
+	for key, value := range source {
+		cloned[key] = value
+	}
+	return cloned
+}
+
+func cloneDurationMetrics(source map[durationMetricKey]*durationMetricValue) map[durationMetricKey]*durationMetricValue {
+	cloned := make(map[durationMetricKey]*durationMetricValue, len(source))
+	for key, value := range source {
+		if value == nil {
+			continue
+		}
+		cloned[key] = &durationMetricValue{
+			buckets: append([]uint64(nil), value.buckets...),
+			sum:     value.sum,
+			count:   value.count,
+		}
+	}
+	return cloned
 }
 
 func (m *HTTPMetrics) serviceLabel() string {

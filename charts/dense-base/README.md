@@ -50,7 +50,7 @@ In app chart `Chart.yaml`:
 ```yaml
 dependencies:
   - name: dense-base
-    version: 1.1.0
+    version: 1.1.1
     repository: oci://ghcr.io/denseai/charts
 ```
 

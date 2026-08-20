@@ -59,7 +59,7 @@ _ = runner.RunBlocking(context.Background())
 ## Shared chassis helpers
 
 - `server.HealthRegistry.RegisterDependency(...)` lets product runtimes wire Redis, worker, exporter readiness checks into DenseCloud-owned `/health*` phases without re-implementing probe handlers.
-- `HTTPRuntimeConfig.MiddlewarePreset` opts into the canonical DenseCloud root HTTP middleware order while `RootMiddleware` remains available for product-owned layers.
+- `HTTPRuntimeConfig.MiddlewarePreset` opts into the canonical DenseCloud root HTTP middleware order while `RootMiddleware` remains available for product-owned layers. DenseCloud-owned `/health*` and `/metrics` routes bypass product root middleware so probes and scrapes stay available; use `SystemMiddleware` for an explicit endpoint-specific protection policy.
 - `HTTPRuntimeConfig.HealthCheckTimeout` bounds each dependency check; the default is two seconds and timed-out or panicking checks fail closed.
 - `server.NewGRPCRuntime(...)` assembles the canonical gRPC interceptor preset, RED metrics, standard gRPC health service, listener lifecycle, and context-aware graceful stop while product services and TLS remain consumer-owned.
 - `middleware.GRPCServerPreset(...)` provides the canonical gRPC interceptor bundle while leaving auth and business interceptors to product repos.

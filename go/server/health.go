@@ -239,7 +239,7 @@ func (r *HealthRegistry) summaryHandler() http.Handler {
 		}
 
 		code := http.StatusOK
-		if ready.Status != "ok" || startup.Status != "ok" {
+		if live.Status != "ok" || ready.Status != "ok" || startup.Status != "ok" {
 			code = http.StatusServiceUnavailable
 		}
 

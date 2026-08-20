@@ -48,9 +48,9 @@ matching version numbers. The first public DenseCore MVP target is:
 
 | Product | DenseCloud runtime/chart | Qualification |
 | --- | --- | --- |
-| DenseCore `v0.1.0` | DenseCloud `v1.1.0` | local chart integration passed; public artifact pending |
+| DenseCore `v0.1.0` | DenseCloud `v1.1.0` | public Go module and Helm chart resolve; downstream serving qualification remains product-owned |
 
-The row becomes qualified only after the DenseCloud public artifacts resolve
+The row becomes fully qualified only after the DenseCloud public artifacts resolve
 and the DenseCore consumer chart and serving smoke gates pass against them.
 
 ## Installation
@@ -101,7 +101,7 @@ In a consumer chart:
 ```yaml
 dependencies:
   - name: dense-base
-    version: 1.1.0
+    version: 1.1.1
     repository: oci://ghcr.io/denseai/charts
 ```
 
@@ -156,9 +156,9 @@ has validated the forwarded client or tenant identity.
 - KEDA requires explicit product-provided triggers; DenseCloud intentionally
   provides no placeholder autoscaling query because it cannot know a product's
   correct workload metric.
-- OpenTelemetry's default insecure local endpoint is for developer loops only.
-  Production deployments must configure a real collector endpoint and TLS or a
-  product-approved transport boundary.
+- OpenTelemetry uses secure transport by default. Insecure OTLP is accepted
+  only for an explicit loopback endpoint; production deployments must configure
+  a real collector endpoint and TLS or a product-approved transport boundary.
 - cert-manager Secret rotation support is a chart contract and reloader
   integration point. Secret issuance belongs to DenseCloud's chart boundary;
   actual zero-downtime certificate hot reload and process reload qualification

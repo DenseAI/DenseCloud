@@ -260,14 +260,11 @@ func TestHTTPRuntime_RecordsRootMiddlewareEarlyRejections(t *testing.T) {
 	t.Parallel()
 
 	runtime, err := NewHTTPRuntime(HTTPRuntimeConfig{
-		ServiceName: "dense-test",
+		ServiceName:      "dense-test",
+		MiddlewarePreset: &HTTPMiddlewarePresetConfig{},
 		RootMiddleware: []func(http.Handler) http.Handler{
 			func(next http.Handler) http.Handler {
 				return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-					if r.URL.Path == "/metrics" {
-						next.ServeHTTP(w, r)
-						return
-					}
 					http.Error(w, "blocked", http.StatusUnauthorized)
 				})
 			},
@@ -276,6 +273,20 @@ func TestHTTPRuntime_RecordsRootMiddlewareEarlyRejections(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("NewHTTPRuntime() error = %v", err)
+	}
+	if err := runtime.Startup(context.Background()); err != nil {
+		t.Fatalf("runtime.Startup() error = %v", err)
+	}
+
+	for _, path := range []string{"/health", "/health/live", "/health/ready", "/health/startup", "/metrics"} {
+		rec := httptest.NewRecorder()
+		runtime.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected DenseCloud-owned route %s to bypass root middleware, got %d", path, rec.Code)
+		}
+		if requestID := rec.Header().Get("X-Request-ID"); requestID == "" {
+			t.Fatalf("expected DenseCloud middleware preset on system route %s", path)
+		}
 	}
 
 	rec := httptest.NewRecorder()
@@ -289,6 +300,54 @@ func TestHTTPRuntime_RecordsRootMiddlewareEarlyRejections(t *testing.T) {
 	body := metricsRec.Body.String()
 	if !strings.Contains(body, `densecloud_http_requests_total{service="dense-test",method="GET",path="/v1/*",status_class="4xx"} 1`) {
 		t.Fatalf("expected early middleware rejection metric, got %q", body)
+	}
+}
+
+func TestHTTPRuntime_AppliesSystemMiddlewareWithoutUsingRootMiddleware(t *testing.T) {
+	t.Parallel()
+
+	runtime, err := NewHTTPRuntime(HTTPRuntimeConfig{
+		ServiceName: "dense-test",
+		RootMiddleware: []func(http.Handler) http.Handler{
+			func(http.Handler) http.Handler {
+				return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					http.Error(w, "root blocked", http.StatusUnauthorized)
+				})
+			},
+		},
+		SystemMiddleware: []func(http.Handler) http.Handler{
+			func(http.Handler) http.Handler {
+				return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					http.Error(w, "system blocked", http.StatusForbidden)
+				})
+			},
+		},
+		DisableRegisteredExtensions: true,
+	})
+	if err != nil {
+		t.Fatalf("NewHTTPRuntime() error = %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	runtime.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected system middleware to guard metrics, got %d", rec.Code)
+	}
+}
+
+func TestHealthRegistrySummaryFailsWhenLivenessFails(t *testing.T) {
+	t.Parallel()
+
+	registry := NewHealthRegistry()
+	registry.MarkStarted()
+	registry.RegisterLiveness("runtime", func(context.Context) error {
+		return errors.New("unhealthy")
+	})
+
+	rec := httptest.NewRecorder()
+	registry.summaryHandler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/health", nil))
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected liveness failure to make health summary unavailable, got %d", rec.Code)
 	}
 }
 

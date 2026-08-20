@@ -21,6 +21,7 @@ type HTTPRuntimeConfig struct {
 	APIBasePath                 string
 	MiddlewarePreset            *HTTPMiddlewarePresetConfig
 	RootMiddleware              []func(http.Handler) http.Handler
+	SystemMiddleware            []func(http.Handler) http.Handler
 	APIMiddleware               []func(http.Handler) http.Handler
 	Health                      *HealthRegistry
 	HealthCheckTimeout          time.Duration
@@ -80,8 +81,13 @@ func NewHTTPRuntime(cfg HTTPRuntimeConfig) (*HTTPRuntime, error) {
 		health.setHealthCheckTimeout(cfg.HealthCheckTimeout)
 	}
 	registerHealth := !cfg.DisableHealthRoutes
+	systemMux := http.NewServeMux()
+	systemPaths := make(map[string]struct{}, 5)
 	if registerHealth {
-		health.RegisterHandlers(rootMux)
+		health.RegisterHandlers(systemMux)
+		for _, path := range []string{"/health", "/health/live", "/health/ready", "/health/startup"} {
+			systemPaths[path] = struct{}{}
+		}
 	}
 
 	metricsPath := cfg.MetricsPath
@@ -117,7 +123,8 @@ func NewHTTPRuntime(cfg HTTPRuntimeConfig) (*HTTPRuntime, error) {
 		})
 	}
 	if registerMetrics && metrics != nil {
-		rootMux.Handle(metricsPath, metrics.Handler())
+		systemMux.Handle(metricsPath, metrics.Handler())
+		systemPaths[metricsPath] = struct{}{}
 	}
 
 	runtime := &HTTPRuntime{
@@ -146,19 +153,36 @@ func NewHTTPRuntime(cfg HTTPRuntimeConfig) (*HTTPRuntime, error) {
 	mountAPISubrouter(rootMux, apiBasePath, apiHandler)
 
 	rootMiddleware := append([]func(http.Handler) http.Handler(nil), cfg.RootMiddleware...)
-	if cfg.MiddlewarePreset != nil {
-		rootMiddleware = append(DefaultHTTPMiddleware(*cfg.MiddlewarePreset), rootMiddleware...)
-	}
 
 	rootHandler := http.Handler(rootMux)
 	rootHandler = densemiddleware.ContentTypeForPrefix(apiBasePath, "application/json")(rootHandler)
 	rootHandler = densemiddleware.Chain(rootMiddleware...)(rootHandler)
+	systemHandler := densemiddleware.Chain(cfg.SystemMiddleware...)(systemMux)
+	rootHandler = systemRouteHandler(systemHandler, systemPaths, rootHandler)
+	if cfg.MiddlewarePreset != nil {
+		rootHandler = densemiddleware.Chain(DefaultHTTPMiddleware(*cfg.MiddlewarePreset)...)(rootHandler)
+	}
 	if metrics != nil {
 		rootHandler = metrics.Middleware()(rootHandler)
 	}
 	runtime.handler = rootHandler
 
 	return runtime, nil
+}
+
+// systemRouteHandler keeps DenseCloud-owned probe and metrics endpoints outside
+// consumer root middleware, which may otherwise block operational traffic.
+func systemRouteHandler(system http.Handler, paths map[string]struct{}, next http.Handler) http.Handler {
+	if len(paths) == 0 {
+		return next
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, ok := paths[r.URL.Path]; ok {
+			system.ServeHTTP(w, r)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // Handler returns the fully assembled root handler.

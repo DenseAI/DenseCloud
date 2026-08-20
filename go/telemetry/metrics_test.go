@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestHTTPMetricsMiddlewareAndHandler(t *testing.T) {
@@ -153,6 +154,27 @@ func TestHTTPMetricsHandler_AppendsGRPCCollectors(t *testing.T) {
 	}
 }
 
+func TestHTTPMetricsHandler_DoesNotHoldLockWhileAppendingCollectors(t *testing.T) {
+	t.Parallel()
+
+	metrics := NewHTTPMetrics(HTTPMetricsConfig{ServiceName: "dense-test"})
+	metrics.collectors = []PrometheusCollector{reentrantCollector{metrics: metrics}}
+
+	done := make(chan string, 1)
+	go func() {
+		done <- metrics.renderPrometheus()
+	}()
+
+	select {
+	case body := <-done:
+		if !strings.Contains(body, "reentrant_collector 1") {
+			t.Fatalf("expected collector output, got %q", body)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("metrics rendering deadlocked while a collector recorded a metric")
+	}
+}
+
 func captureHTTPMetricsBody(metrics *HTTPMetrics) string {
 	rec := httptest.NewRecorder()
 	metrics.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
@@ -165,6 +187,15 @@ type metricsCapabilityRecorder struct {
 	hijacked bool
 	pushed   bool
 	readFrom bool
+}
+
+type reentrantCollector struct {
+	metrics *HTTPMetrics
+}
+
+func (c reentrantCollector) AppendPrometheus(builder *strings.Builder) {
+	c.metrics.observe(http.MethodGet, "/collector", http.StatusOK, 0)
+	builder.WriteString("reentrant_collector 1\n")
 }
 
 func (r *metricsCapabilityRecorder) Flush() {

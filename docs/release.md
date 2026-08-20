@@ -48,7 +48,7 @@ bash scripts/package_helm.sh /tmp/charts
 2. Push to OCI chart registry (recommended):
 
 ```bash
-helm push /tmp/charts/dense-base-1.1.0.tgz oci://ghcr.io/denseai/charts
+helm push /tmp/charts/dense-base-X.Y.Z.tgz oci://ghcr.io/denseai/charts
 ```
 
 3. Product chart dependency example:
@@ -56,7 +56,7 @@ helm push /tmp/charts/dense-base-1.1.0.tgz oci://ghcr.io/denseai/charts
 ```yaml
 dependencies:
   - name: dense-base
-    version: 1.1.0
+    version: X.Y.Z
     repository: oci://ghcr.io/denseai/charts
 ```
 
@@ -74,6 +74,10 @@ dependencies:
 - The default keyed HTTP and gRPC limiters trust only the direct transport peer.
   Trusted proxy, tenant, or API-key based limits require a consumer-supplied
   extractor after that identity has been validated.
+- DenseCloud-owned `/health*` and `/metrics` routes bypass product root
+  middleware so Kubernetes probes and monitoring remain available. Public
+  deployments must protect those routes with `SystemMiddleware`, ingress, or
+  NetworkPolicy when their exposure would be inappropriate.
 - cert-manager rotation support stops at chart resources and reloader wiring.
   Secret reload behavior and zero-downtime certificate qualification stay with
   the consuming product runtime.

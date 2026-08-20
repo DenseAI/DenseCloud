@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net"
 	"strings"
+	"sync"
 	"time"
 
 	"go.opentelemetry.io/otel"
@@ -13,7 +15,8 @@ import (
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
-	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
+	semconv "go.opentelemetry.io/otel/semconv/v1.41.0"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // OTelConfig holds OpenTelemetry configuration.
@@ -38,7 +41,7 @@ func DefaultOTelConfig() OTelConfig {
 		DeploymentEnvironment: "",
 		Endpoint:              "localhost:4317",
 		Enabled:               false,
-		Insecure:              true,
+		Insecure:              false,
 		SamplingRate:          1.0,
 		BatchTimeout:          5 * time.Second,
 	}
@@ -46,15 +49,24 @@ func DefaultOTelConfig() OTelConfig {
 
 // OTelProvider wraps the tracer provider and provides cleanup methods.
 type OTelProvider struct {
-	provider *sdktrace.TracerProvider
-	config   OTelConfig
+	provider           *sdktrace.TracerProvider
+	config             OTelConfig
+	previousProvider   trace.TracerProvider
+	previousPropagator propagation.TextMapPropagator
+	shutdownOnce       sync.Once
+	shutdownErr        error
 }
+
+var otelGlobalMu sync.Mutex
 
 // InitOTelTracer initializes the OpenTelemetry tracer provider.
 func InitOTelTracer(cfg OTelConfig) (*OTelProvider, error) {
 	if !cfg.Enabled {
 		slog.Info("OpenTelemetry tracing disabled")
 		return nil, nil
+	}
+	if cfg.Insecure && !isLoopbackOTLPEndpoint(cfg.Endpoint) {
+		return nil, fmt.Errorf("insecure OTLP transport is only allowed for loopback endpoints")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -98,11 +110,15 @@ func InitOTelTracer(cfg OTelConfig) (*OTelProvider, error) {
 		sdktrace.WithSampler(sampler),
 	)
 
+	otelGlobalMu.Lock()
+	previousProvider := otel.GetTracerProvider()
+	previousPropagator := otel.GetTextMapPropagator()
 	otel.SetTracerProvider(tp)
 	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(
 		propagation.TraceContext{},
 		propagation.Baggage{},
 	))
+	otelGlobalMu.Unlock()
 
 	logAttrs := []any{
 		slog.String("endpoint", cfg.Endpoint),
@@ -115,9 +131,24 @@ func InitOTelTracer(cfg OTelConfig) (*OTelProvider, error) {
 	slog.Info("OpenTelemetry tracing initialized", logAttrs...)
 
 	return &OTelProvider{
-		provider: tp,
-		config:   cfg,
+		provider:           tp,
+		config:             cfg,
+		previousProvider:   previousProvider,
+		previousPropagator: previousPropagator,
 	}, nil
+}
+
+func isLoopbackOTLPEndpoint(endpoint string) bool {
+	host, _, err := net.SplitHostPort(strings.TrimSpace(endpoint))
+	if err != nil {
+		host = strings.TrimSpace(endpoint)
+	}
+	host = strings.Trim(host, "[]")
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // Shutdown gracefully shuts down the tracer provider.
@@ -125,8 +156,18 @@ func (p *OTelProvider) Shutdown(ctx context.Context) error {
 	if p == nil || p.provider == nil {
 		return nil
 	}
-	slog.Info("shutting down OpenTelemetry tracer provider")
-	return p.provider.Shutdown(ctx)
+	p.shutdownOnce.Do(func() {
+		slog.Info("shutting down OpenTelemetry tracer provider")
+		p.shutdownErr = p.provider.Shutdown(ctx)
+
+		otelGlobalMu.Lock()
+		defer otelGlobalMu.Unlock()
+		if otel.GetTracerProvider() == p.provider {
+			otel.SetTracerProvider(p.previousProvider)
+			otel.SetTextMapPropagator(p.previousPropagator)
+		}
+	})
+	return p.shutdownErr
 }
 
 // ShutdownWithTimeout shuts down the provider with a timeout.
